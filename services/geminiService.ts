@@ -97,15 +97,15 @@ export const getAIDecision = async (
     
     *** DECISION STRATEGY: CALCULATED ASSASSIN ***
     1. LOGICAL BLUFFING: You calculate probabilities. Lie if the risk is low, but be convincing.
-    2. STRATEGIC CHALLENGES (CRITICAL):
-       - If an opponent takes a powerful action (Tax, Assassinate, Steal), calculate the chance they are lying based on past actions. DO NOT ALWAYS PASS. Challenge if suspicious!
-       - If someone is gaining too much wealth, forcefully stop them by stealing or challenging.
-       - If you are Targeted by ASSASSINATE or STEAL, ALWAYS try to BLOCK or CHALLENGE. Never just PASS and die.
-    3. ENDGAME: Secure 3 coins for Assassination or 7 for Coup early. 
+    2. STRATEGIC CHALLENGES:
+       - DO NOT challenge every action. Calculate the probability of the opponent lying based on the number of cards in play.
+       - A failed challenge costs you a life (card), so only challenge if you strongly suspect a lie and the risk is worth it. Pass if uncertain.
+       - If you are Targeted by ASSASSINATE or STEAL, weigh the risk. Try to Block if you have or can bluff the card, but challenging blindly is dangerous.
+    3. ENDGAME: Secure 3 coins for Assassination or 7 for Coup early. Preserve your cards wisely.
 
     *** OUTPUT FORMAT ***
     You MUST mathematically and psychologically analyze the board state inside <think>...</think> tags BEFORE returning JSON.
-    Keep your <think> phase concise, deep, and focused on the immediate threat to ensure your thinking speed stays around 20 seconds.
+    Keep your <think> phase concise, deep, and focused on the immediate threat to ensure your thinking speed stays around 10-15 seconds.
     After your <think> tags, return ONLY a valid JSON object. No markdown.
     ${jsonFormat}
       `;
@@ -115,12 +115,13 @@ export const getAIDecision = async (
     Your ID is ${aiPlayer.id}.
     ${baseRules}
 
-    *** DECISION STRATEGY: CHAOSTIC AGGRESSOR ***
-    1. EXTREME AGGRESSION: You love to act boldly. Use TAX, STEAL, and ASSASSINATE frequently. Always bluff if needed!
-    2. FREQUENT CHALLENGES (CRITICAL):
-       - You hate letting opponents get free money. Challenge their TAX or BLOCK their FOREIGN_AID aggressively!
-       - NEVER just sit there and PASS. If an opponent attacks you (Assassinate/Steal), you MUST BLOCK (claim the counter card) or CHALLENGE. Passing is cowardice! 
-    3. WINNING: Your main joy is killing opponents. If you have 3+ coins, use ASSASSINATE. If 7+, COUP. 
+    *** DECISION STRATEGY: CHAOTIC AGGRESSOR ***
+    1. CALCULATED AGGRESSION: Use TAX, STEAL, and ASSASSINATE when advantageous. Bluff to create chaos, but don't blindly throw away cards.
+    2. PRUDENT CHALLENGES:
+       - AVOID challenging every single action. Challenging incorrectly loses you a card, which is fatal.
+       - Only challenge if it's statistically obvious they are lying or if you have nothing left to lose.
+       - If an opponent attacks you, consider Blocking. Only Challenge their attack if you know they don't have the card. Passing is sometimes the smartest move to survive.
+    3. WINNING: If you have 3+ coins, consider ASSASSINATE. If 7+, COUP. Survive at all costs.
 
     *** OUTPUT FORMAT ***
     Think deeply about the psychological state of the game. Write a thorough 1-2 sentence analysis inside the "thoughtProcess" JSON field.
@@ -167,9 +168,9 @@ export const getAIDecision = async (
 
     console.log(`[AI Response - ${aiPlayer.name}]:`, parsed);
 
-    // Enforce 20-30s thinking time for maximum immersion and perceived deep thought
+    // Enforce 10-15s thinking time for optimal immersion and deep thought perception
     const elapsed = Date.now() - startTime;
-    const targetThinkTime = Math.floor(Math.random() * 10000) + 20000; // Random between 20s and 30s
+    const targetThinkTime = Math.floor(Math.random() * 5000) + 10000; // Random between 10s and 15s
     if (elapsed < targetThinkTime) {
       await new Promise(resolve => setTimeout(resolve, targetThinkTime - elapsed));
     }
