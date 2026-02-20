@@ -67,17 +67,21 @@ export const initializeGame = (): GameState => {
     waitingForResponseFrom: [],
     playerToLoseInfluence: null,
     logs: [{ id: generateId(), text: "Game Started. Good luck.", type: 'info', timestamp: Date.now() }],
-    winner: null
+    winner: null,
+    startedAt: Date.now()
   };
 };
 
 export const nextTurn = (state: GameState): GameState => {
-  // Check win condition
+  // Check win condition and placements
   const activePlayers = state.players.filter(p => !p.isEliminated);
   if (activePlayers.length === 1) {
-    state.phase = GamePhase.GAME_OVER;
-    state.winner = activePlayers[0].name;
-    log(state, `${activePlayers[0].name} wins the game!`, 'success');
+    if (state.phase !== GamePhase.GAME_OVER) {
+      activePlayers[0].placement = 1;
+      state.phase = GamePhase.GAME_OVER;
+      state.winner = activePlayers[0].name;
+      log(state, `${activePlayers[0].name} wins the game!`, 'success');
+    }
     return { ...state };
   }
 
@@ -334,6 +338,11 @@ export const handleLoseCard = (state: GameState, playerId: string, cardId: strin
   const activeCards = player.cards.filter(c => !c.isRevealed);
   if (activeCards.length === 0) {
     player.isEliminated = true;
+
+    // Determine placement (if 3 players alive before this, this player gets 3. If 2, they get 2)
+    const aliveCount = state.players.filter(p => !p.isEliminated).length;
+    player.placement = aliveCount + 1; // 2 alive -> this player is 3rd. 1 alive -> this player is 2nd.
+
     log(state, `${player.name} has been exiled!`, 'danger');
   }
 

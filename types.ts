@@ -60,6 +60,7 @@ export interface Player {
   coins: number;
   cards: Card[];
   isEliminated: boolean;
+  placement?: number;
 }
 
 export interface GameLogEntry {
@@ -87,19 +88,20 @@ export interface GameState {
   phase: GamePhase;
   players: Player[];
   deck: CardType[]; // Remaining cards in the deck
-  
+
   // State Machine Context
   pendingAction: PendingAction | null;
   pendingBlock: PendingBlock | null;
-  
+
   // Who needs to respond? (Used for UI locking)
-  waitingForResponseFrom: string[]; 
-  
+  waitingForResponseFrom: string[];
+
   // Specific context for resolving card loss
   playerToLoseInfluence: string | null;
 
   logs: GameLogEntry[];
   winner: string | null;
+  startedAt: number;
 }
 
 // AI Decision Types

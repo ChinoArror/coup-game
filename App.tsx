@@ -2,33 +2,73 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GameState, GamePhase, ActionType, CardType, Player } from './types';
 import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handleLoseCard, handlePass, nextTurn, resolveActionSuccess } from './utils/gameEngine';
 import { getAIDecision } from './services/geminiService';
-import { Shield, User, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw } from 'lucide-react';
+import { Shield, User, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut } from 'lucide-react';
 
-export default function App() {
+export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard') => void, onLogout: () => void }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [aiThinking, setAiThinking] = useState<string | null>(null);
   const [selectingTargetFor, setSelectingTargetFor] = useState<ActionType | null>(null);
 
-  // Initialize Game
+  // Track leaderboard submission to avoid duplicates
+  const submittedRef = useRef(false);
+
+  // Initialize Game from DB
   useEffect(() => {
-    // Simulating Cloudflare KV restore or Init
-    const saved = localStorage.getItem('coup_gamestate');
-    if (saved) {
-      // In a real app, validate expiry
-      setGameState(JSON.parse(saved));
-    } else {
-      setGameState(initializeGame());
-    }
-    setLoading(false);
+    fetch('/api/process')
+      .then(res => res.json())
+      .then(data => {
+        if (data.state) {
+          setGameState(data.state);
+        } else {
+          setGameState(initializeGame());
+        }
+        setLoading(false);
+      })
+      .catch(e => {
+        setGameState(initializeGame());
+        setLoading(false);
+      });
   }, []);
 
-  // Persist State
+  // Persist State to DB
   useEffect(() => {
-    if (gameState) {
-      localStorage.setItem('coup_gamestate', JSON.stringify(gameState));
+    if (!gameState || loading) return;
+
+    // Check if game over to submit leaderboard
+    if (gameState.phase === GamePhase.GAME_OVER && !submittedRef.current) {
+      submittedRef.current = true;
+      const human = gameState.players.find(p => p.id === 'human');
+      if (human && human.placement) {
+        const duration = Math.floor((Date.now() - gameState.startedAt) / 1000);
+        fetch('/api/leaderboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ place: human.placement, duration })
+        });
+      }
     }
-  }, [gameState]);
+
+    const timer = setTimeout(() => {
+      fetch('/api/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: gameState })
+      });
+    }, 1000);
+
+    const handleBeforeUnload = () => {
+      if (gameState) {
+        navigator.sendBeacon('/api/process', JSON.stringify({ state: gameState }));
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [gameState, loading]);
 
   // --- AI Game Loop ---
   useEffect(() => {
@@ -188,12 +228,18 @@ export default function App() {
     setGameState(handleLoseCard(gameState, 'human', cardId));
   };
 
-  const resetGame = () => {
-    localStorage.removeItem('coup_gamestate');
+  const resetGame = async () => {
+    await fetch('/api/process', { method: 'DELETE' });
+    submittedRef.current = false;
     setGameState(initializeGame());
-  }
+  };
 
-  if (loading || !gameState) return <div className="h-screen w-full bg-slate-900 flex items-center justify-center text-white">Initializing Protocol...</div>;
+  const doLogout = async () => {
+    await fetch('/api/logout', { method: 'POST' });
+    onLogout();
+  };
+
+  if (loading || !gameState) return <div className="h-screen w-full bg-slate-900 flex items-center justify-center text-amber-500 font-mono animate-pulse tracking-widest">ESTABLISHING CONNECTION...</div>;
 
   const human = gameState.players.find(p => p.id === 'human')!;
   const opponents = gameState.players.filter(p => p.id !== 'human');
@@ -225,7 +271,14 @@ export default function App() {
           <Shield className="text-amber-500 w-6 h-6" />
           <h1 className="text-lg font-bold tracking-wider text-amber-500 font-mono">COUP: SHADOW PROTOCOL</h1>
         </div>
-        <button onClick={resetGame} className="p-2 hover:bg-slate-800 rounded-full transition-colors"><RefreshCw size={18} /></button>
+        <div className="flex gap-2 items-center">
+          {role === 'admin' && (
+            <button onClick={() => onNavigate('admin')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Admin Panel"><User size={18} /></button>
+          )}
+          <button onClick={() => onNavigate('leaderboard')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
+          <button onClick={resetGame} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>
+          <button onClick={doLogout} className="p-2 hover:bg-red-900/50 rounded-full transition-colors text-slate-400 hover:text-red-500 ml-2" title="Logout"><LogOut size={18} /></button>
+        </div>
       </header>
 
       <main className="max-w-5xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -280,8 +333,8 @@ export default function App() {
           {/* Table / Status Area */}
           <div className="bg-slate-900/50 rounded-2xl p-8 border border-slate-800 flex flex-col items-center justify-center min-h-[200px] text-center relative overflow-hidden">
             {gameState.phase === GamePhase.GAME_OVER ? (
-              <div className="animate-bounce text-2xl font-bold text-amber-500">
-                GAME OVER. Winner: {gameState.winner}
+              <div className="animate-bounce text-2xl font-bold text-amber-500 uppercase tracking-widest">
+                GAME OVER. WINNER: {gameState.winner}
               </div>
             ) : (
               <>
@@ -299,7 +352,7 @@ export default function App() {
                 {/* Visualizing the "Stack" */}
                 <div className="flex gap-4 mt-4">
                   {gameState.waitingForResponseFrom.map(id => (
-                    <div key={id} className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full border border-slate-700 animate-pulse">
+                    <div key={id} className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full border border-slate-700 animate-pulse font-mono tracking-widest">
                       Waiting for {gameState.players.find(p => p.id === id)?.name}
                     </div>
                   ))}
@@ -317,7 +370,7 @@ export default function App() {
                   <CircleDollarSign size={18} /> {human.coins} Credits
                 </div>
               </div>
-              {mustLoseInfluence && <div className="text-red-500 font-bold animate-pulse flex items-center gap-2"><AlertTriangle /> Choose card to lose</div>}
+              {mustLoseInfluence && <div className="text-red-500 font-bold animate-pulse flex items-center gap-2 font-mono"><AlertTriangle /> Choose card to lose</div>}
             </div>
 
             {/* My Cards */}

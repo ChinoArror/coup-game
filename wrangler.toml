@@ -2,6 +2,10 @@ name = "coup-shadow-protocol"
 main = "worker.ts"
 compatibility_date = "2024-02-20"
 
+routes = [
+  { pattern = "coup.aryuki.com", custom_domain = true }
+]
+
 [assets]
 directory = "dist"
 binding = "ASSETS"
@@ -10,3 +14,10 @@ binding = "ASSETS"
 PROTOCOL_PASSWORD = "Qwerasdf"
 Model_Alpha = "gemini-3-flash-preview"
 Model_Beta = "deepseek-reasoner"
+ADMIN_USER = "admin"
+ADMIN_PASS = "Qwerasdf"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "coup-game-db"
+database_id = "53591d43-2dfd-4308-ae04-d8e1999e6ca3"
