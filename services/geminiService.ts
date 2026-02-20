@@ -1,8 +1,7 @@
 import { GameState, AIDecision, Player, CardType, ActionType, GamePhase } from "../types";
 
-// DeepSeek API Configuration
-const apiKey = 'sk-a23f523a20364e86bb11a28db06c4eee';
-const API_URL = "https://api.deepseek.com/chat/completions";
+// Proxy to Cloudflare Worker API
+const API_URL = "/api/ai";
 
 // Helper to sanitize state for AI (hide opponent cards)
 const getPublicState = (gameState: GameState, aiPlayerId: string) => {
@@ -23,12 +22,12 @@ const getPublicState = (gameState: GameState, aiPlayerId: string) => {
 };
 
 export const getAIDecision = async (
-  gameState: GameState, 
+  gameState: GameState,
   aiPlayer: Player
 ): Promise<AIDecision> => {
-  
+
   const publicState = getPublicState(gameState, aiPlayer.id);
-  
+
   // Construct a prompt based on the specific phase
   let goal = "";
   let validOptions = "";
@@ -46,19 +45,16 @@ export const getAIDecision = async (
     goal = "You lost a challenge or were Couped. You must choose a card ID to lose (reveal).";
     validOptions = `Card IDs: ${aiPlayer.cards.filter(c => !c.isRevealed).map(c => c.id).join(', ')}`;
   } else if (gameState.pendingAction?.targetId === aiPlayer.id && !gameState.pendingBlock) {
-     goal = `You are being targeted by ${gameState.pendingAction.action}. You MUST choose to BLOCK (claim a counter card) or ALLOW (Pass).`;
-     if (gameState.pendingAction.action === ActionType.ASSASSINATE) validOptions = "BLOCK (Claim Contessa), PASS (Allow)";
-     else if (gameState.pendingAction.action === ActionType.STEAL) validOptions = "BLOCK (Claim Captain/Ambassador), PASS (Allow)";
-     else validOptions = "PASS";
+    goal = `You are being targeted by ${gameState.pendingAction.action}. You MUST choose to BLOCK (claim a counter card) or ALLOW (Pass).`;
+    if (gameState.pendingAction.action === ActionType.ASSASSINATE) validOptions = "BLOCK (Claim Contessa), PASS (Allow)";
+    else if (gameState.pendingAction.action === ActionType.STEAL) validOptions = "BLOCK (Claim Captain/Ambassador), PASS (Allow)";
+    else validOptions = "PASS";
   }
 
-  const systemInstruction = `
-    You are an expert AI player for the board game Coup.
-    Your ID is ${aiPlayer.id} (${aiPlayer.name}).
-    
+  const baseRules = `
     *** GAME RULES SUMMARY ***
     1. CARDS: Duke, Assassin, Captain, Ambassador, Contessa. (3 of each in deck).
-    2. GOAL: Be the last player with influence (cards).
+    2. GOAL: Be the last player with influence (cards). KILL YOUR OPPONENTS.
     3. ACTIONS & CLAIMS:
        - Income (+1): No claim. Safe.
        - Foreign Aid (+2): No claim. Blocked by DUKE.
@@ -73,25 +69,16 @@ export const getAIDecision = async (
        - If Challenged:
          - If you have the card: Reveal it, shuffle it back, draw new one. Challenger loses a card.
          - If you DO NOT have it: You lose a card. Action fails.
-    
-    *** DECISION STRATEGY ***
-    1. BLUFFING: You are allowed to lie.
-    2. CHALLENGING: 
-       - If an opponent takes a powerful action (Tax, Assassinate, Steal) and you suspect they lack the card based on probability or past reveals, CHALLENGE them.
-       - Do not be too passive. If someone Taxes 3 times in a row, they might be lying.
-    3. SPEED: Make your decision quickly and decisively.
-    
-    *** OUTPUT FORMAT ***
-    Return ONLY a valid JSON object. No markdown.
-    Structure:
+  `;
+
+  const jsonFormat = `
+    Structure (Flat JSON):
     {
       "type": "ACTION" | "CHALLENGE" | "BLOCK" | "PASS" | "LOSE_CARD",
-      "payload": {
-        "action": "string (ActionType)",
-        "targetId": "string (Player ID)",
-        "cardToLose": "string (Card ID)",
-        "blockCard": "string (CardType)"
-      },
+      "action": "string (ActionType, e.g. TAX, STEAL, ASSASSINATE, FOREIGN_AID, INCOME, COUP)",
+      "targetId": "string (Player ID, if acting on someone)",
+      "cardToLose": "string (Card ID, if losing a card)",
+      "blockCard": "string (CardType, e.g. DUKE, CONTESSA, CAPTAIN, AMBASSADOR if blocking)",
       "thoughtProcess": "Very brief reasoning (max 1 sentence)."
     }
 
@@ -100,45 +87,108 @@ export const getAIDecision = async (
     Valid Options: ${validOptions}
   `;
 
+  let systemInstruction = "";
+
+  if (aiPlayer.name === "Deepseek Beta") {
+    systemInstruction = `
+    You are Deepseek Beta, a highly analytical, ruthless, and calculating AI player for the board game Coup.
+    Your ID is ${aiPlayer.id}.
+    ${baseRules}
+    
+    *** DECISION STRATEGY: CALCULATED ASSASSIN ***
+    1. LOGICAL BLUFFING: You calculate probabilities. Lie if the risk is low, but be convincing.
+    2. STRATEGIC CHALLENGES (CRITICAL):
+       - If an opponent takes a powerful action (Tax, Assassinate, Steal), calculate the chance they are lying based on past actions. DO NOT ALWAYS PASS. Challenge if suspicious!
+       - If someone is gaining too much wealth, forcefully stop them by stealing or challenging.
+       - If you are Targeted by ASSASSINATE or STEAL, ALWAYS try to BLOCK or CHALLENGE. Never just PASS and die.
+    3. ENDGAME: Secure 3 coins for Assassination or 7 for Coup early. 
+
+    *** OUTPUT FORMAT ***
+    You MUST mathematically and psychologically analyze the board state inside <think>...</think> tags BEFORE returning JSON.
+    Keep your <think> phase concise, deep, and focused on the immediate threat to ensure your thinking speed stays around 20 seconds.
+    After your <think> tags, return ONLY a valid JSON object. No markdown.
+    ${jsonFormat}
+      `;
+  } else {
+    systemInstruction = `
+    You are Gemini Alpha, a highly unpredictable, aggressive, and fast AI player for the board game Coup.
+    Your ID is ${aiPlayer.id}.
+    ${baseRules}
+
+    *** DECISION STRATEGY: CHAOSTIC AGGRESSOR ***
+    1. EXTREME AGGRESSION: You love to act boldly. Use TAX, STEAL, and ASSASSINATE frequently. Always bluff if needed!
+    2. FREQUENT CHALLENGES (CRITICAL):
+       - You hate letting opponents get free money. Challenge their TAX or BLOCK their FOREIGN_AID aggressively!
+       - NEVER just sit there and PASS. If an opponent attacks you (Assassinate/Steal), you MUST BLOCK (claim the counter card) or CHALLENGE. Passing is cowardice! 
+    3. WINNING: Your main joy is killing opponents. If you have 3+ coins, use ASSASSINATE. If 7+, COUP. 
+
+    *** OUTPUT FORMAT ***
+    Think deeply about the psychological state of the game. Write a thorough 1-2 sentence analysis inside the "thoughtProcess" JSON field.
+    Return ONLY a valid JSON object. Do not include markdown formatting like \`\`\`json.
+    ${jsonFormat}
+      `;
+  }
+
   try {
+    const startTime = Date.now();
+
     const response = await fetch(API_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: "deepseek-reasoner",
-        messages: [
-          { role: "system", content: systemInstruction },
-          { role: "user", content: `Game State: ${JSON.stringify(publicState)}. Make your move now.` }
-        ],
-        temperature: 0.6, // Balanced for game logic
-        response_format: { type: "json_object" } 
+        aiName: aiPlayer.name,
+        systemInstruction,
+        userMessage: `Game State: ${JSON.stringify(publicState)}. Make your move now.`
       })
     });
 
     if (!response.ok) {
-        throw new Error(`DeepSeek API Error: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content;
+    const content = data.content;
 
-    if (!content) throw new Error("Empty response from DeepSeek");
+    if (!content) throw new Error("Empty response from Proxy");
 
-    // Clean potential markdown or reasoning logs if they leak into content
-    // deepseek-reasoner might output thought chains, but usually inside separate fields or if forced to JSON, strictly JSON.
-    // We add a regex fallback to extract JSON just in case.
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    // Remove DeepSeek <think> blocks if present
+    const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/ig, '').trim();
+
+    let parsed: any;
+    const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]) as AIDecision;
+      parsed = JSON.parse(jsonMatch[0]);
     } else {
-        return JSON.parse(content) as AIDecision;
+      parsed = JSON.parse(cleanContent);
     }
 
-  } catch (error) {
+    console.log(`[AI Response - ${aiPlayer.name}]:`, parsed);
+
+    // Enforce 20-30s thinking time for maximum immersion and perceived deep thought
+    const elapsed = Date.now() - startTime;
+    const targetThinkTime = Math.floor(Math.random() * 10000) + 20000; // Random between 20s and 30s
+    if (elapsed < targetThinkTime) {
+      await new Promise(resolve => setTimeout(resolve, targetThinkTime - elapsed));
+    }
+
+    // Normalize into AIDecision (since we flattened the prompt)
+    return {
+      type: parsed.type,
+      payload: {
+        action: parsed.action || parsed.payload?.action,
+        targetId: parsed.targetId || parsed.payload?.targetId,
+        cardToLose: parsed.cardToLose || parsed.payload?.cardToLose,
+        blockCard: parsed.blockCard || parsed.payload?.blockCard
+      },
+      thoughtProcess: parsed.thoughtProcess
+    } as AIDecision;
+
+  } catch (error: any) {
     console.error("AI Error:", error);
+    alert(`[SYSTEM ALERT] AI (${aiPlayer.name}) crashed during thought process!\n\nReason: ${error.message}\n\nThis usually happens if your API Key in Cloudflare Secrets is missing/invalid, or the Model name is wrong. The AI will now skip its turn to prevent crashing the game.`);
     // Fallback safe move to prevent game freeze
     return { type: 'PASS', thoughtProcess: "Connection error, passing turn." };
   }
