@@ -9,20 +9,44 @@ const RootComponent = () => {
   const [authStatus, setAuthStatus] = useState<'checking' | 'unauth' | 'admin' | 'user'>('checking');
   const [view, setView] = useState<'game' | 'admin' | 'leaderboard'>('game');
 
+  const checkAuth = async () => {
+    try {
+      const res = await fetch('/api/me');
+      if (!res.ok) throw new Error('Unauth');
+      const data = await res.json();
+      setAuthStatus(data.role);
+    } catch (e) {
+      setAuthStatus('unauth');
+    }
+  };
+
   useEffect(() => {
-    fetch('/api/me')
-      .then(res => {
-        if (!res.ok) throw new Error('Unauth');
-        return res.json();
+    const searchParams = new URLSearchParams(window.location.search);
+    const ssoToken = searchParams.get('token');
+
+    if (window.location.pathname === '/sso-callback' && ssoToken) {
+      setAuthStatus('checking');
+      fetch('/api/sso-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: ssoToken })
       })
-      .then(data => {
-        setAuthStatus(data.role);
-        if (data.role === 'admin') setView('admin');
-        else setView('game');
-      })
-      .catch((e) => {
-        setAuthStatus('unauth');
-      });
+        .then(res => {
+          if (!res.ok) throw new Error('Callback failed');
+          return res.json();
+        })
+        .then(data => {
+          // Success! Clear URL and check auth
+          window.history.replaceState({}, document.title, window.location.pathname.replace('/sso-callback', ''));
+          checkAuth();
+        })
+        .catch(e => {
+          console.error('[SSO_DEBUG] Callback failed:', e);
+          setAuthStatus('unauth');
+        });
+    } else {
+      checkAuth();
+    }
   }, []);
 
   if (authStatus === 'checking') {
@@ -30,17 +54,12 @@ const RootComponent = () => {
   }
 
   if (authStatus === 'unauth') {
-    return <Login onLogin={(user) => {
-      setAuthStatus(user.role);
-      if (user.role === 'admin') setView('admin');
-      else setView('game');
-    }} />;
+    return <Login />;
   }
 
   if (view === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;
 
-  // Pass setView so that App can navigate to leaderboard or logout
   return <App role={authStatus} onNavigate={setView} onLogout={() => setAuthStatus('unauth')} />;
 };
 

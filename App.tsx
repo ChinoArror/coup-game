@@ -44,7 +44,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
         fetch('/api/leaderboard', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ place: human.placement, duration })
+          body: JSON.stringify({ place: human.placement, duration, game_id: gameState.gameId })
         });
       }
     }
@@ -53,13 +53,13 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
       fetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: gameState })
+        body: JSON.stringify({ state: gameState, game_id: gameState.gameId })
       });
     }, 1000);
 
     const handleBeforeUnload = () => {
       if (gameState) {
-        navigator.sendBeacon('/api/process', JSON.stringify({ state: gameState }));
+        navigator.sendBeacon('/api/process', JSON.stringify({ state: gameState, game_id: gameState.gameId }));
       }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -235,8 +235,15 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   };
 
   const doLogout = async () => {
-    await fetch('/api/logout', { method: 'POST' });
-    onLogout();
+    try {
+      await fetch('/api/logout', { method: 'POST' });
+    } catch (e) {
+      console.error('Local logout failed', e);
+    }
+    // Synchronize logout with Auth Center as per way.md / way0.md
+    const SSO_URL = 'https://accounts.aryuki.com';
+    const afterLogoutUrl = encodeURIComponent(window.location.origin);
+    window.location.href = `${SSO_URL}/logout?redirect=${afterLogoutUrl}`;
   };
 
   if (loading || !gameState) return <div className="h-screen w-full bg-slate-900 flex items-center justify-center text-amber-500 font-mono animate-pulse tracking-widest">ESTABLISHING CONNECTION...</div>;

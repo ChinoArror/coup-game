@@ -102,6 +102,7 @@ export interface GameState {
   logs: GameLogEntry[];
   winner: string | null;
   startedAt: number;
+  gameId: string;
 }
 
 // AI Decision Types

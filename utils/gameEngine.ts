@@ -68,7 +68,8 @@ export const initializeGame = (): GameState => {
     playerToLoseInfluence: null,
     logs: [{ id: generateId(), text: "Game Started. Good luck.", type: 'info', timestamp: Date.now() }],
     winner: null,
-    startedAt: Date.now()
+    startedAt: Date.now(),
+    gameId: crypto.randomUUID()
   };
 };
 

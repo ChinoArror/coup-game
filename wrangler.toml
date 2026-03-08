@@ -8,11 +8,14 @@ routes = [
 
 [assets]
 directory = "dist"
+not_found_handling = "single-page-application"
 binding = "ASSETS"
 
 [vars]
+SSO_APP_ID = "coup-shadow-protocol"
+SSO_SECRET = "0566efc7-d715-4bef-b7c8-45cfddcf65f5"
 PROTOCOL_PASSWORD = "Qwerasdf"
-Model_Alpha = "gemini-3-flash-preview"
+Model_Alpha = "gemini-3.1-pro-preview"
 Model_Beta = "deepseek-reasoner"
 ADMIN_USER = "admin"
 ADMIN_PASS = "Qwerasdf"
