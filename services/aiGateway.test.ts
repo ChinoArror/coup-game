@@ -53,7 +53,7 @@ describe('callAIChannel', () => {
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe('https://api.openai.com/v1/chat/completions');
       expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer openai-test-key');
-      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gpt-5.6-luna', reasoning_effort: 'max' });
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gpt-5.6-luna', reasoning_effort: 'high' });
       return Response.json({
         choices: [{ message: { content: '{"type":"PASS"}' } }],
         usage: { total_tokens: 13 },

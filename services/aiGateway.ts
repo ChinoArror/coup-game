@@ -98,7 +98,7 @@ export async function callAIChannel(
           { role: 'system', content: request.systemInstruction },
           { role: 'user', content: request.userMessage },
         ],
-        reasoning_effort: 'max',
+        reasoning_effort: isOpenAI ? 'high' : 'max',
         ...(isOpenAI ? {} : { thinking: { type: 'enabled' } }),
       }),
     });
