@@ -6,6 +6,7 @@ const CHANNEL_IDS = ['1', '2', '3'] as const;
 
 type PlayerSlot = typeof PLAYER_SLOTS[number];
 type ChannelId = typeof CHANNEL_IDS[number];
+type WorkerExecutionContext = { waitUntil(promise: Promise<unknown>): void };
 
 class HttpError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -46,7 +47,7 @@ function validChannel(value: unknown): value is ChannelId {
 }
 
 export default {
-  async fetch(request: Request, env: any, ctx: ExecutionContext) {
+  async fetch(request: Request, env: any, ctx: WorkerExecutionContext) {
     const url = new URL(request.url);
     const appId = env.SSO_APP_ID || 'coup-game';
     const appSecret = env.SSO_SECRET;

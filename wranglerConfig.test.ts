@@ -11,4 +11,10 @@ describe('Worker AI channel configuration', () => {
     expect(vars).toContain('Model_3');
     expect(vars).not.toMatch(/(?:GEMINI|DEEPSEEK|OPENAI)_API_KEY\s*=/i);
   });
+
+  it('does not expose a provider API key through the Vite browser build', () => {
+    const viteConfig = readFileSync('vite.config.ts', 'utf8');
+
+    expect(viteConfig).not.toMatch(/GEMINI_API_KEY|process\.env\.API_KEY/);
+  });
 });

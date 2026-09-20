@@ -55,7 +55,7 @@ You can claim to have a defensive character to block an action targeted at you (
 - **Frontend**: React, TypeScript, Vite, TailwindCSS
 - **Backend**: Cloudflare Workers (Edge Computing)
 - **Database**: Cloudflare D1 (Serverless Relational SQL)
-- **AI Models**: Google Gemini 2.0 Flash (`Model_Alpha`), Deepseek Reasoner (`Model_Beta`)
+- **AI Models**: Configurable Gemini (`Model_1`), DeepSeek (`Model_2`), and OpenAI (`Model_3`) channels.
 
 ### 🌟 Key Features
 * **Dual AI Personalities**: Two uniquely prompted LLMs fighting against you and each other simultaneously.
