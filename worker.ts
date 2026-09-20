@@ -50,7 +50,7 @@ export default {
   async fetch(request: Request, env: any, ctx: WorkerExecutionContext) {
     const url = new URL(request.url);
     const appId = env.SSO_APP_ID || 'coup-game';
-    const appSecret = env.SSO_SECRET;
+    const appSecret = env.SSO_APP_SECRET || env.SSO_SECRET;
 
     const verifyToken = async (token: string) => {
       try {

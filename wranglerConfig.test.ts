@@ -10,6 +10,7 @@ describe('Worker AI channel configuration', () => {
     expect(vars).toContain('Model_2');
     expect(vars).toContain('Model_3');
     expect(vars).not.toMatch(/(?:GEMINI|DEEPSEEK|OPENAI)_API_KEY\s*=/i);
+    expect(vars).not.toMatch(/(?:SSO_SECRET|PROTOCOL_PASSWORD|ADMIN_USER|ADMIN_PASS)\s*=/);
   });
 
   it('does not expose a provider API key through the Vite browser build', () => {

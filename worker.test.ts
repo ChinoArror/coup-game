@@ -71,7 +71,7 @@ function createEnvironment(db = new FakeDatabase()) {
       DB: db,
       ASSETS: { fetch: vi.fn(async () => new Response('missing', { status: 404 })) },
       SSO_APP_ID: 'coup-game',
-      SSO_SECRET: 'subapp-secret',
+      SSO_APP_SECRET: 'subapp-secret',
       GEMINI_API_KEY: 'gemini-key',
       DEEPSEEK_API_KEY: 'deepseek-key',
       OPENAI_API_KEY: 'openai-key',
@@ -91,8 +91,12 @@ function installFetchMock(providerStatus = 200) {
       const payload = JSON.parse(Buffer.from(bearer.replace('Bearer ', '').split('.')[1], 'base64url').toString());
       return Response.json(payload);
     }
-    if (url.includes('/api/quota/check')) return Response.json({ valid: true, remaining_tokens: 1000 });
+    if (url.includes('/api/quota/check')) {
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer subapp-secret');
+      return Response.json({ valid: true, remaining_tokens: 1000 });
+    }
     if (url.includes('/api/quota/consume')) {
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer subapp-secret');
       consumeBodies.push(JSON.parse(String(init?.body)));
       return Response.json({ success: true });
     }
