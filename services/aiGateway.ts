@@ -56,7 +56,7 @@ export async function callAIChannel(
         body: JSON.stringify({
           system_instruction: { parts: [{ text: request.systemInstruction }] },
           contents: [{ role: 'user', parts: [{ text: request.userMessage }] }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.6 },
+          generationConfig: { responseMimeType: 'application/json' },
         }),
       },
     );
@@ -81,7 +81,8 @@ export async function callAIChannel(
           { role: 'system', content: request.systemInstruction },
           { role: 'user', content: request.userMessage },
         ],
-        temperature: 0.6,
+        reasoning_effort: 'max',
+        ...(isOpenAI ? {} : { thinking: { type: 'enabled' } }),
       }),
     });
     await ensureSuccess(response);

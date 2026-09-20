@@ -13,9 +13,9 @@ binding = "ASSETS"
 
 [vars]
 SSO_APP_ID = "coup-shadow-protocol"
-Model_1 = "gemini-3.1-pro-preview"
-Model_2 = "deepseek-reasoner"
-Model_3 = "gpt-4.1-mini"
+Model_1 = "gemini-3.8-flash"
+Model_2 = "deepseek-flash"
+Model_3 = "gpt-5.6-luna"
 
 [[d1_databases]]
 binding = "DB"
