@@ -33,9 +33,26 @@ function requireConfig(value: string | undefined, label: string): string {
   return value;
 }
 
+function sanitizeProviderMessage(message: string): string {
+  return message
+    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk|AIza)[A-Za-z0-9_-]+\b/g, '[REDACTED]')
+    .slice(0, 500);
+}
+
 async function ensureSuccess(response: Response): Promise<void> {
   if (!response.ok) {
-    throw new AIChannelError(`AI provider request failed with HTTP ${response.status}`, response.status);
+    let detail = '';
+    try {
+      const body = await response.json() as { error?: { message?: unknown } | unknown; message?: unknown };
+      const providerMessage = typeof body.error === 'object' && body.error && 'message' in body.error
+        ? body.error.message
+        : body.message;
+      if (typeof providerMessage === 'string') detail = `: ${sanitizeProviderMessage(providerMessage)}`;
+    } catch {
+      // The provider did not return a JSON error payload.
+    }
+    throw new AIChannelError(`AI provider request failed with HTTP ${response.status}${detail}`, response.status);
   }
 }
 

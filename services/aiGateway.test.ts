@@ -66,6 +66,16 @@ describe('callAIChannel', () => {
     });
   });
 
+  it('returns a sanitized provider error detail when the OpenAI request is rejected', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      error: { message: 'Unsupported parameter: reasoning_effort. Authorization: Bearer sk-test-secret' },
+    }, { status: 400 }));
+
+    await expect(callAIChannel('3', env, request, fetcher)).rejects.toThrow(
+      'Unsupported parameter: reasoning_effort. Authorization: Bearer [REDACTED]',
+    );
+  });
+
   it('rejects an unknown channel without making an upstream request', async () => {
     const fetcher = vi.fn();
 
