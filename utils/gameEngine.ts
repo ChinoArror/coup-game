@@ -52,8 +52,8 @@ const log = (state: GameState, text: string, type: GameLogEntry['type'] = 'info'
 export const initializeGame = (): GameState => {
   const deck = createDeck();
   const human = createPlayer('human', 'You', false, deck);
-  const ai1 = createPlayer('ai1', 'Gemini Alpha', true, deck);
-  const ai2 = createPlayer('ai2', 'Deepseek Beta', true, deck);
+  const ai1 = createPlayer('ai1', 'Alapha', true, deck);
+  const ai2 = createPlayer('ai2', 'Beta', true, deck);
 
   return {
     roomId: generateId(),

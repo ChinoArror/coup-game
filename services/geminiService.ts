@@ -3,6 +3,8 @@ import { GameState, AIDecision, Player, CardType, ActionType, GamePhase } from "
 // Proxy to Cloudflare Worker API
 const API_URL = "/api/ai";
 
+export const getPlayerSlot = (playerId: string): 'alapha' | 'beta' => playerId === 'ai1' ? 'alapha' : 'beta';
+
 // Helper to sanitize state for AI (hide opponent cards)
 const getPublicState = (gameState: GameState, aiPlayerId: string) => {
   return {
@@ -89,7 +91,7 @@ export const getAIDecision = async (
 
   let systemInstruction = "";
 
-  if (aiPlayer.name === "Deepseek Beta") {
+  if (aiPlayer.id === "ai2") {
     systemInstruction = `
     You are Deepseek Beta, a highly analytical, ruthless, and calculating AI player for the board game Coup.
     Your ID is ${aiPlayer.id}.
@@ -139,7 +141,7 @@ export const getAIDecision = async (
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        aiName: aiPlayer.name,
+        playerSlot: getPlayerSlot(aiPlayer.id),
         systemInstruction,
         userMessage: `Game State: ${JSON.stringify(publicState)}. Make your move now.`
       })

@@ -57,7 +57,7 @@ const RootComponent = () => {
     return <Login />;
   }
 
-  if (view === 'admin') return <AdminPanel onNavigate={setView} />;
+  if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;
 
   return <App role={authStatus} onNavigate={setView} onLogout={() => setAuthStatus('unauth')} />;
