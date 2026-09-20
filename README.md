@@ -82,8 +82,10 @@ You can claim to have a defensive character to block an action targeted at you (
    ```bash
    npx wrangler secret put PROTOCOL_PASSWORD
    npx wrangler secret put GEMINI_API_KEY
-   npx wrangler secret put DeepseekApiKey
+   npx wrangler secret put DEEPSEEK_API_KEY
+   npx wrangler secret put OPENAI_API_KEY
    ```
+   Configure the channel models through Worker variables: `Model_1` (Gemini), `Model_2` (DeepSeek), and `Model_3` (OpenAI). API keys must never be placed in `wrangler.toml` or the frontend.
 4. **Deploy to Cloudflare Network**
    ```bash
    npm run build
