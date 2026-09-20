@@ -117,8 +117,10 @@ export default {
     };
 
     const callWithQuota = async (user: NonNullable<typeof session>, channelId: ChannelId, systemInstruction: string, userMessage: string) => {
-      await checkQuota(user);
+      const hasUnlimitedQuota = user.role === 'admin';
+      if (!hasUnlimitedQuota) await checkQuota(user);
       const result = await callAIChannel(channelId, env, { systemInstruction, userMessage });
+      if (hasUnlimitedQuota) return result;
       ctx.waitUntil(fetch(`${SSO_URL}/api/quota/consume`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${appSecret}` },

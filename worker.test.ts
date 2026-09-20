@@ -84,6 +84,7 @@ function createEnvironment(db = new FakeDatabase()) {
 
 function installFetchMock(providerStatus = 200) {
   const consumeBodies: any[] = [];
+  const quotaChecks: string[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes('/api/verify')) {
@@ -93,6 +94,7 @@ function installFetchMock(providerStatus = 200) {
     }
     if (url.includes('/api/quota/check')) {
       expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer subapp-secret');
+      quotaChecks.push(url);
       return Response.json({ valid: true, remaining_tokens: 1000 });
     }
     if (url.includes('/api/quota/consume')) {
@@ -110,7 +112,7 @@ function installFetchMock(providerStatus = 200) {
     }
     throw new Error(`Unexpected fetch: ${url}`);
   }));
-  return consumeBodies;
+  return { consumeBodies, quotaChecks };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -125,20 +127,15 @@ describe('AI administration and quota routing', () => {
     expect(response.status).toBe(403);
   });
 
-  it('uses the selected OpenAI channel and consumes the returned tokens after a successful game call', async () => {
+  it('consumes the returned tokens after a successful regular-user game call', async () => {
     const { env } = createEnvironment();
-    const consumeBodies = installFetchMock();
+    const { consumeBodies } = installFetchMock();
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } as any;
 
-    const saveResponse = await worker.fetch(request('/api/admin/ai-config', 'admin', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ playerSlot: 'alapha', channelId: '3' }),
-    }), env, ctx);
-    expect(saveResponse.status).toBe(200);
+    (env.DB as FakeDatabase).config.alapha = '3';
 
-    const response = await worker.fetch(request('/api/ai', 'admin', {
+    const response = await worker.fetch(request('/api/ai', 'user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerSlot: 'alapha', systemInstruction: 'Return JSON.', userMessage: 'Pass.' }),
@@ -146,13 +143,31 @@ describe('AI administration and quota routing', () => {
     await Promise.all(pending);
 
     expect(response.status).toBe(200);
-    expect(consumeBodies).toContainEqual(expect.objectContaining({ uuid: 'admin-uuid', app_id: 'coup-game', tokens: 21 }));
+    expect(consumeBodies).toContainEqual(expect.objectContaining({ uuid: 'user-uuid', app_id: 'coup-game', tokens: 21 }));
+  });
+
+  it('does not check or consume quota for an administrator AI call', async () => {
+    const { env } = createEnvironment();
+    const { consumeBodies, quotaChecks } = installFetchMock();
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } as any;
+
+    const response = await worker.fetch(request('/api/admin/ai-test', 'admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId: '3' }),
+    }), env, ctx);
+    await Promise.all(pending);
+
+    expect(response.status).toBe(200);
+    expect(quotaChecks).toEqual([]);
+    expect(consumeBodies).toEqual([]);
   });
 
   it('does not consume quota when the selected provider fails', async () => {
     const { env, db } = createEnvironment();
     db.config.alapha = '3';
-    const consumeBodies = installFetchMock(503);
+    const { consumeBodies } = installFetchMock(503);
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } as any;
 
