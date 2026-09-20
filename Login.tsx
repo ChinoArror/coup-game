@@ -1,13 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Shield, Lock, User } from 'lucide-react';
+import { createSsoLoginUrl } from './services/sso';
 
 export default function Login() {
-  const SSO_URL = 'https://accounts.aryuki.com';
-  const APP_ID = 'coup-game'; // Matches wrangler.toml
-  const CALLBACK_URL = window.location.origin + '/sso-callback';
-
   const handleSSOLogin = () => {
-    window.location.href = `${SSO_URL}/?client_id=${APP_ID}&redirect=${encodeURIComponent(CALLBACK_URL)}`;
+    window.location.href = createSsoLoginUrl(window.location.origin);
   };
 
   return (
