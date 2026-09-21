@@ -55,7 +55,7 @@ You can claim to have a defensive character to block an action targeted at you (
 - **Frontend**: React, TypeScript, Vite, TailwindCSS
 - **Backend**: Cloudflare Workers (Edge Computing)
 - **Database**: Cloudflare D1 (Serverless Relational SQL)
-- **AI Models**: Google Gemini 2.0 Flash (`Model_Alpha`), Deepseek Reasoner (`Model_Beta`)
+- **AI Models**: Gemini 3.8 Flash (`Model_1=gemini-3.8-flash`), DeepSeek Flash with max thinking (`Model_2=deepseek-flash`), and OpenAI GPT-5.6 Luna with max reasoning (`Model_3=gpt-5.6-luna`).
 
 ### 🌟 Key Features
 * **Dual AI Personalities**: Two uniquely prompted LLMs fighting against you and each other simultaneously.
@@ -82,8 +82,10 @@ You can claim to have a defensive character to block an action targeted at you (
    ```bash
    npx wrangler secret put PROTOCOL_PASSWORD
    npx wrangler secret put GEMINI_API_KEY
-   npx wrangler secret put DeepseekApiKey
+   npx wrangler secret put DEEPSEEK_API_KEY
+   npx wrangler secret put OPENAI_API_KEY
    ```
+   Configure the channel models through Worker variables: `Model_1` (Gemini), `Model_2` (DeepSeek), and `Model_3` (OpenAI). API keys must never be placed in `wrangler.toml` or the frontend.
 4. **Deploy to Cloudflare Network**
    ```bash
    npm run build

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { GameState, GamePhase, ActionType, CardType, Player } from './types';
 import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handleLoseCard, handlePass, nextTurn, resolveActionSuccess } from './utils/gameEngine';
 import { getAIDecision } from './services/geminiService';
-import { Shield, User, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut } from 'lucide-react';
+import { canAccessAdminDash } from './services/adminAccess';
+import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut } from 'lucide-react';
 
 export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard') => void, onLogout: () => void }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -279,8 +280,11 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           <h1 className="text-lg font-bold tracking-wider text-amber-500 font-mono">COUP: SHADOW PROTOCOL</h1>
         </div>
         <div className="flex gap-2 items-center">
-          {role === 'admin' && (
-            <button onClick={() => onNavigate('admin')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Admin Panel"><User size={18} /></button>
+          {canAccessAdminDash(role) && (
+            <button onClick={() => onNavigate('admin')} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 font-mono text-xs font-bold tracking-wider text-amber-500 transition-colors hover:bg-slate-800" title="AdminDash">
+              <LayoutDashboard size={18} />
+              ADMINDASH
+            </button>
           )}
           <button onClick={() => onNavigate('leaderboard')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
           <button onClick={resetGame} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>

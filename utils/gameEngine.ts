@@ -47,13 +47,18 @@ const log = (state: GameState, text: string, type: GameLogEntry['type'] = 'info'
   });
 };
 
+const normalizeActionType = (action: string): ActionType | null => {
+  const normalized = action.trim().toUpperCase().replace(/[\s_]+/g, '_');
+  return Object.values(ActionType).find(candidate => candidate.toUpperCase().replace(/[\s_]+/g, '_') === normalized) || null;
+};
+
 // --- Core Logic ---
 
 export const initializeGame = (): GameState => {
   const deck = createDeck();
   const human = createPlayer('human', 'You', false, deck);
-  const ai1 = createPlayer('ai1', 'Gemini Alpha', true, deck);
-  const ai2 = createPlayer('ai2', 'Deepseek Beta', true, deck);
+  const ai1 = createPlayer('ai1', 'Alapha', true, deck);
+  const ai2 = createPlayer('ai2', 'Beta', true, deck);
 
   return {
     roomId: generateId(),
@@ -106,34 +111,39 @@ export const nextTurn = (state: GameState): GameState => {
 
 export const handlePlayerAction = (state: GameState, action: ActionType, targetId?: string): GameState => {
   const actor = state.players[state.currentPlayerIndex];
+  const canonicalAction = normalizeActionType(action);
+  if (!canonicalAction) {
+    log(state, `${actor.name} declared an invalid action.`, 'alert');
+    return state;
+  }
 
   // Validation
-  if (actor.coins >= 10 && action !== ActionType.COUP) {
+  if (actor.coins >= 10 && canonicalAction !== ActionType.COUP) {
     log(state, "You have 10+ coins. You MUST Coup.", 'alert');
     return state; // Invalid move
   }
-  if (action === ActionType.COUP && actor.coins < 7) return state;
-  if (action === ActionType.ASSASSINATE && actor.coins < 3) return state;
+  if (canonicalAction === ActionType.COUP && actor.coins < 7) return state;
+  if (canonicalAction === ActionType.ASSASSINATE && actor.coins < 3) return state;
 
-  log(state, `${actor.name} declares ${action}${targetId ? ` on ${state.players.find(p => p.id === targetId)?.name}` : ''}.`);
+  log(state, `${actor.name} declares ${canonicalAction}${targetId ? ` on ${state.players.find(p => p.id === targetId)?.name}` : ''}.`);
 
-  const newState = { ...state, pendingAction: { actorId: actor.id, action, targetId } };
+  const newState = { ...state, pendingAction: { actorId: actor.id, action: canonicalAction, targetId } };
 
   // Payment costs are deducted immediately? In some rules yes, but if challenged successfully, coins return? 
   // Coup/Assassinate cost is spent. If Assassinate is blocked, coins spent. If Challenged and lost, coins spent?
   // Simplification: Deduct coins now.
-  if (action === ActionType.COUP) newState.players[state.currentPlayerIndex].coins -= 7;
-  if (action === ActionType.ASSASSINATE) newState.players[state.currentPlayerIndex].coins -= 3;
+  if (canonicalAction === ActionType.COUP) newState.players[state.currentPlayerIndex].coins -= 7;
+  if (canonicalAction === ActionType.ASSASSINATE) newState.players[state.currentPlayerIndex].coins -= 3;
 
   // Next Phase logic
-  if (action === ActionType.INCOME) {
+  if (canonicalAction === ActionType.INCOME) {
     // Unblockable, unchallengeable
     newState.players[state.currentPlayerIndex].coins += 1;
     log(newState, `${actor.name} gained 1 coin.`);
     return nextTurn(newState);
   }
 
-  if (action === ActionType.COUP) {
+  if (canonicalAction === ActionType.COUP) {
     // Unblockable, unchallengeable
     if (!targetId) return state;
     newState.phase = GamePhase.CHALLENGE_LOSS;

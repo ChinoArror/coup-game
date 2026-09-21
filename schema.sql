@@ -31,3 +31,10 @@ CREATE TABLE leaderboard (
   place INTEGER NOT NULL,
   duration_seconds INTEGER NOT NULL
 );
+
+-- Admin-selected provider channel for each fixed AI opponent.
+CREATE TABLE ai_player_config (
+  player_slot TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

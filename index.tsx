@@ -4,6 +4,7 @@ import App from './App';
 import Login from './Login';
 import AdminPanel from './AdminPanel';
 import Leaderboard from './Leaderboard';
+import { cleanSsoCallbackPath } from './services/sso';
 
 const RootComponent = () => {
   const [authStatus, setAuthStatus] = useState<'checking' | 'unauth' | 'admin' | 'user'>('checking');
@@ -26,6 +27,7 @@ const RootComponent = () => {
 
     if (window.location.pathname === '/sso-callback' && ssoToken) {
       setAuthStatus('checking');
+      window.history.replaceState({}, document.title, cleanSsoCallbackPath(window.location.pathname));
       fetch('/api/sso-callback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -35,9 +37,7 @@ const RootComponent = () => {
           if (!res.ok) throw new Error('Callback failed');
           return res.json();
         })
-        .then(data => {
-          // Success! Clear URL and check auth
-          window.history.replaceState({}, document.title, window.location.pathname.replace('/sso-callback', ''));
+        .then(() => {
           checkAuth();
         })
         .catch(e => {
@@ -57,7 +57,7 @@ const RootComponent = () => {
     return <Login />;
   }
 
-  if (view === 'admin') return <AdminPanel onNavigate={setView} />;
+  if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;
 
   return <App role={authStatus} onNavigate={setView} onLogout={() => setAuthStatus('unauth')} />;
