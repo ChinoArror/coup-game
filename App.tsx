@@ -4,9 +4,9 @@ import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handl
 import { getAIDecision } from './services/geminiService';
 import { canAccessAdminDash } from './services/adminAccess';
 import { createAIRequestContext, isAIRequestCurrent } from './services/aiDecisionGuard';
-import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut } from 'lucide-react';
+import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut, History as HistoryIcon } from 'lucide-react';
 
-export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard') => void, onLogout: () => void }) {
+export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard' | 'history') => void, onLogout: () => void }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [aiThinking, setAiThinking] = useState<string | null>(null);
@@ -14,6 +14,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
 
   // Track leaderboard submission to avoid duplicates
   const submittedRef = useRef(false);
+  const historySubmittedRef = useRef(false);
 
   // Initialize Game from DB
   useEffect(() => {
@@ -21,7 +22,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
       .then(res => res.json())
       .then(data => {
         if (data.state) {
-          setGameState(data.state);
+          setGameState({ ...data.state, revision: data.state.revision || 0 });
         } else {
           setGameState(initializeGame());
         }
@@ -49,6 +50,16 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           body: JSON.stringify({ place: human.placement, duration, game_id: gameState.gameId })
         });
       }
+    }
+
+    if (gameState.phase === GamePhase.GAME_OVER && !historySubmittedRef.current) {
+      void fetch('/api/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: gameState }),
+      }).then(response => {
+        if (response.ok || response.status === 409) historySubmittedRef.current = true;
+      }).catch(() => undefined);
     }
 
     const timer = setTimeout(() => {
@@ -175,6 +186,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   const resetGame = async () => {
     await fetch('/api/process', { method: 'DELETE' });
     submittedRef.current = false;
+    historySubmittedRef.current = false;
     setGameState(initializeGame());
   };
 
@@ -195,6 +207,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   const human = gameState.players.find(p => p.id === 'human')!;
   const opponents = gameState.players.filter(p => p.id !== 'human');
   const isMyTurn = gameState.currentPlayerIndex === gameState.players.indexOf(human);
+  const mustCoup = human.coins >= 10;
 
   // UI State Computations
   const canRespond = gameState.waitingForResponseFrom.includes('human');
@@ -229,6 +242,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
               ADMINDASH
             </button>
           )}
+          <button onClick={() => onNavigate('history')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Match History"><HistoryIcon size={18} /></button>
           <button onClick={() => onNavigate('leaderboard')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
           <button onClick={resetGame} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>
           <button onClick={doLogout} className="p-2 hover:bg-red-900/50 rounded-full transition-colors text-slate-400 hover:text-red-500 ml-2" title="Logout"><LogOut size={18} /></button>
@@ -354,12 +368,12 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
               {/* 1. Turn Actions */}
               {isMyTurn && gameState.phase === GamePhase.TURN_START && !human.isEliminated && (
                 <>
-                  <ActionButton label="Income (1)" disabled={selectingTargetFor !== null} onClick={() => onAction(ActionType.INCOME)} sub="Safe" />
-                  <ActionButton label="Foreign Aid (2)" disabled={selectingTargetFor !== null} onClick={() => onAction(ActionType.FOREIGN_AID)} sub="Blockable by Duke" />
-                  <ActionButton label="Tax (3)" disabled={selectingTargetFor !== null} onClick={() => onAction(ActionType.TAX)} sub="Claims Duke" color="purple" />
-                  <ActionButton label="Exchange" disabled={selectingTargetFor !== null} onClick={() => onAction(ActionType.EXCHANGE)} sub="Claims Ambassador" color="blue" />
-                  <ActionButton label="Steal (2)" disabled={selectingTargetFor !== null} onClick={() => onAction(ActionType.STEAL)} sub="Claims Captain" color="green" />
-                  <ActionButton label="Assassinate (3)" disabled={selectingTargetFor !== null || human.coins < 3} onClick={() => onAction(ActionType.ASSASSINATE)} sub="Claims Assassin" color="red" />
+                  <ActionButton label="Income (1)" disabled={selectingTargetFor !== null || mustCoup} onClick={() => onAction(ActionType.INCOME)} sub="Safe" />
+                  <ActionButton label="Foreign Aid (2)" disabled={selectingTargetFor !== null || mustCoup} onClick={() => onAction(ActionType.FOREIGN_AID)} sub="Blockable by Duke" />
+                  <ActionButton label="Tax (3)" disabled={selectingTargetFor !== null || mustCoup} onClick={() => onAction(ActionType.TAX)} sub="Claims Duke" color="purple" />
+                  <ActionButton label="Exchange" disabled={selectingTargetFor !== null || mustCoup} onClick={() => onAction(ActionType.EXCHANGE)} sub="Claims Ambassador" color="blue" />
+                  <ActionButton label="Steal (2)" disabled={selectingTargetFor !== null || mustCoup} onClick={() => onAction(ActionType.STEAL)} sub="Claims Captain" color="green" />
+                  <ActionButton label="Assassinate (3)" disabled={selectingTargetFor !== null || human.coins < 3 || mustCoup} onClick={() => onAction(ActionType.ASSASSINATE)} sub="Claims Assassin" color="red" />
                   <ActionButton label="Coup (7)" disabled={selectingTargetFor !== null || human.coins < 7} onClick={() => onAction(ActionType.COUP)} sub="Unblockable" color="red" strong />
 
                   {selectingTargetFor && (

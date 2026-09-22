@@ -4,11 +4,12 @@ import App from './App';
 import Login from './Login';
 import AdminPanel from './AdminPanel';
 import Leaderboard from './Leaderboard';
+import History from './History';
 import { cleanSsoCallbackPath } from './services/sso';
 
 const RootComponent = () => {
   const [authStatus, setAuthStatus] = useState<'checking' | 'unauth' | 'admin' | 'user'>('checking');
-  const [view, setView] = useState<'game' | 'admin' | 'leaderboard'>('game');
+  const [view, setView] = useState<'game' | 'admin' | 'leaderboard' | 'history'>('game');
 
   const checkAuth = async () => {
     try {
@@ -59,6 +60,7 @@ const RootComponent = () => {
 
   if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;
+  if (view === 'history') return <History onBack={() => setView('game')} />;
 
   return <App role={authStatus} onNavigate={setView} onLogout={() => setAuthStatus('unauth')} />;
 };
