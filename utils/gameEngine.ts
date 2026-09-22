@@ -1,404 +1,309 @@
-import { GameState, Player, Card, CardType, ActionType, GamePhase, GameLogEntry } from "../types";
+import { GameState, Player, CardType, ActionType, GamePhase, GameLogEntry } from "../types";
 
-// --- Constants ---
-const COINS_TO_WIN = 999;
 const INITIAL_COINS = 2;
+const generateId = () => Math.random().toString(36).slice(2, 11);
+const shuffle = <T,>(array: T[]): T[] => array.sort(() => Math.random() - 0.5);
 
-// --- Helper Functions ---
+const createDeck = (): CardType[] => shuffle(
+  [CardType.DUKE, CardType.ASSASSIN, CardType.CAPTAIN, CardType.AMBASSADOR, CardType.CONTESSA]
+    .flatMap(type => [type, type, type]),
+);
 
-const generateId = () => Math.random().toString(36).substr(2, 9);
+const createPlayer = (id: string, name: string, isAI: boolean, deck: CardType[]): Player => ({
+  id,
+  name,
+  isAI,
+  coins: INITIAL_COINS,
+  cards: [
+    { id: generateId(), type: deck.pop()!, isRevealed: false },
+    { id: generateId(), type: deck.pop()!, isRevealed: false },
+  ],
+  isEliminated: false,
+});
 
-const shuffle = <T,>(array: T[]): T[] => {
-  return array.sort(() => Math.random() - 0.5);
-};
-
-const createDeck = (): CardType[] => {
-  const types = [CardType.DUKE, CardType.ASSASSIN, CardType.CAPTAIN, CardType.AMBASSADOR, CardType.CONTESSA];
-  // 3 copies of each card (Standard Coup rules)
-  let deck: CardType[] = [];
-  types.forEach(t => {
-    deck.push(t, t, t);
-  });
-  return shuffle(deck);
-};
-
-const createPlayer = (id: string, name: string, isAI: boolean, deck: CardType[]): Player => {
-  const c1 = deck.pop()!;
-  const c2 = deck.pop()!;
-  return {
-    id,
-    name,
-    isAI,
-    coins: INITIAL_COINS,
-    cards: [
-      { id: generateId(), type: c1, isRevealed: false },
-      { id: generateId(), type: c2, isRevealed: false }
-    ],
-    isEliminated: false
-  };
-};
+const cloneState = (state: GameState): GameState => structuredClone(state);
+const commit = (state: GameState): GameState => ({ ...state, revision: (state.revision || 0) + 1 });
+const snapshotCoins = (state: GameState) => Object.fromEntries(state.players.map(player => [player.id, player.coins]));
 
 const log = (state: GameState, text: string, type: GameLogEntry['type'] = 'info') => {
-  state.logs.push({
-    id: generateId(),
-    text,
-    type,
-    timestamp: Date.now()
-  });
+  state.logs.push({ id: generateId(), text, type, timestamp: Date.now(), coins: snapshotCoins(state) });
 };
-
-const normalizeActionType = (action: string): ActionType | null => {
+const normalizeActionType = (action?: string): ActionType | null => {
+  if (!action) return null;
   const normalized = action.trim().toUpperCase().replace(/[\s_]+/g, '_');
   return Object.values(ActionType).find(candidate => candidate.toUpperCase().replace(/[\s_]+/g, '_') === normalized) || null;
 };
 
-// --- Core Logic ---
-
-export const initializeGame = (): GameState => {
-  const deck = createDeck();
-  const human = createPlayer('human', 'You', false, deck);
-  const ai1 = createPlayer('ai1', 'Alapha', true, deck);
-  const ai2 = createPlayer('ai2', 'Beta', true, deck);
-
-  return {
-    roomId: generateId(),
-    turn: 1,
-    currentPlayerIndex: 0,
-    phase: GamePhase.TURN_START,
-    players: [human, ai1, ai2],
-    deck,
-    pendingAction: null,
-    pendingBlock: null,
-    waitingForResponseFrom: [],
-    playerToLoseInfluence: null,
-    logs: [{ id: generateId(), text: "Game Started. Good luck.", type: 'info', timestamp: Date.now() }],
-    winner: null,
-    startedAt: Date.now(),
-    gameId: crypto.randomUUID()
-  };
+const playerById = (state: GameState, playerId?: string) => state.players.find(player => player.id === playerId);
+const isLiveOpponent = (state: GameState, actorId: string, targetId?: string) => {
+  const target = playerById(state, targetId);
+  return Boolean(target && !target.isEliminated && target.id !== actorId);
+};
+const canRespond = (state: GameState, playerId: string) => {
+  const player = playerById(state, playerId);
+  return state.waitingForResponseFrom.includes(playerId) && Boolean(player && !player.isEliminated);
 };
 
-export const nextTurn = (state: GameState): GameState => {
-  // Check win condition and placements
-  const activePlayers = state.players.filter(p => !p.isEliminated);
+const nextTurnInPlace = (state: GameState): void => {
+  const activePlayers = state.players.filter(player => !player.isEliminated);
   if (activePlayers.length === 1) {
     if (state.phase !== GamePhase.GAME_OVER) {
       activePlayers[0].placement = 1;
       state.phase = GamePhase.GAME_OVER;
       state.winner = activePlayers[0].name;
-      log(state, `${activePlayers[0].name} wins the game!`, 'success');
+      log(state, activePlayers[0].name + " wins the game!", 'success');
     }
-    return { ...state };
+    return;
   }
 
-  // Find next player who is not eliminated
   let nextIndex = (state.currentPlayerIndex + 1) % state.players.length;
-  while (state.players[nextIndex].isEliminated) {
-    nextIndex = (nextIndex + 1) % state.players.length;
-  }
+  while (state.players[nextIndex].isEliminated) nextIndex = (nextIndex + 1) % state.players.length;
+  state.currentPlayerIndex = nextIndex;
+  state.phase = GamePhase.TURN_START;
+  state.pendingAction = null;
+  state.pendingBlock = null;
+  state.waitingForResponseFrom = [];
+  state.playerToLoseInfluence = null;
+  state.turn += 1;
+};
 
-  return {
-    ...state,
-    currentPlayerIndex: nextIndex,
+const resolveActionSuccessInPlace = (state: GameState): void => {
+  const action = state.pendingAction;
+  if (!action) return;
+  const actor = playerById(state, action.actorId);
+  const target = playerById(state, action.targetId);
+  if (!actor) return;
+
+  switch (action.action) {
+    case ActionType.FOREIGN_AID:
+      actor.coins += 2;
+      log(state, actor.name + " collected Foreign Aid.");
+      break;
+    case ActionType.TAX:
+      actor.coins += 3;
+      log(state, actor.name + " collected Tax.");
+      break;
+    case ActionType.STEAL:
+      if (target) {
+        const stolen = Math.min(2, target.coins);
+        target.coins -= stolen;
+        actor.coins += stolen;
+        log(state, actor.name + " stole " + stolen + " from " + target.name + ".");
+      }
+      break;
+    case ActionType.EXCHANGE: {
+      const currentCards = actor.cards.filter(card => !card.isRevealed).map(card => card.type);
+      const newCards = [state.deck.pop(), state.deck.pop()].filter((card): card is CardType => Boolean(card));
+      state.deck.push(...currentCards);
+      state.deck = shuffle(state.deck);
+      const revealed = actor.cards.filter(card => card.isRevealed);
+      actor.cards = [...revealed, ...newCards.slice(0, currentCards.length).map(type => ({ id: generateId(), type, isRevealed: false }))];
+      log(state, actor.name + " exchanged cards with the Court deck.");
+      break;
+    }
+    case ActionType.ASSASSINATE:
+      if (target) {
+        state.phase = GamePhase.CHALLENGE_LOSS;
+        state.playerToLoseInfluence = target.id;
+        state.waitingForResponseFrom = [target.id];
+        log(state, "Assassination successful! Target must lose influence.");
+        return;
+      }
+      break;
+  }
+  nextTurnInPlace(state);
+};
+
+export const initializeGame = (): GameState => {
+  const deck = createDeck();
+  const state: GameState = {
+    roomId: generateId(),
+    turn: 1,
+    currentPlayerIndex: 0,
     phase: GamePhase.TURN_START,
+    players: [createPlayer('human', 'You', false, deck), createPlayer('ai1', 'Alapha', true, deck), createPlayer('ai2', 'Beta', true, deck)],
+    deck,
     pendingAction: null,
     pendingBlock: null,
     waitingForResponseFrom: [],
     playerToLoseInfluence: null,
-    turn: state.turn + 1
+    logs: [],
+    winner: null,
+    startedAt: Date.now(),
+    gameId: crypto.randomUUID(),
+    revision: 0,
   };
+  log(state, "Game Started. Good luck.");
+  return state;
 };
 
-export const handlePlayerAction = (state: GameState, action: ActionType, targetId?: string): GameState => {
-  const actor = state.players[state.currentPlayerIndex];
-  const canonicalAction = normalizeActionType(action);
-  if (!canonicalAction) {
-    log(state, `${actor.name} declared an invalid action.`, 'alert');
-    return state;
+export const nextTurn = (state: GameState): GameState => {
+  const next = cloneState(state);
+  nextTurnInPlace(next);
+  return commit(next);
+};
+
+export const handlePlayerAction = (
+  state: GameState,
+  actorIdOrAction: string | ActionType,
+  actionOrTarget?: ActionType | string,
+  targetId?: string,
+): GameState => {
+  const legacyAction = normalizeActionType(actorIdOrAction);
+  const actorId = legacyAction ? state.players[state.currentPlayerIndex]?.id : actorIdOrAction as string;
+  const action = normalizeActionType(legacyAction || actionOrTarget as string);
+  const target = legacyAction ? actionOrTarget as string | undefined : targetId;
+  const actor = playerById(state, actorId);
+
+  if (!actor || actor.isEliminated || state.phase !== GamePhase.TURN_START || state.players[state.currentPlayerIndex]?.id !== actorId || !action) return state;
+  if (actor.coins >= 10 && action !== ActionType.COUP) return state;
+  if ((action === ActionType.COUP && actor.coins < 7) || (action === ActionType.ASSASSINATE && actor.coins < 3)) return state;
+  if ([ActionType.STEAL, ActionType.ASSASSINATE, ActionType.COUP].includes(action) && !isLiveOpponent(state, actorId, target)) return state;
+
+  const next = cloneState(state);
+  const nextActor = playerById(next, actorId)!;
+  if (action === ActionType.COUP) nextActor.coins -= 7;
+  if (action === ActionType.ASSASSINATE) nextActor.coins -= 3;
+  const targetName = target ? playerById(next, target)?.name : undefined;
+  log(next, nextActor.name + " declares " + action + (targetName ? " on " + targetName : "") + ".");
+  next.pendingAction = { actorId, action, targetId: target };
+
+  if (action === ActionType.INCOME) {
+    nextActor.coins += 1;
+    log(next, nextActor.name + " gained 1 coin.");
+    nextTurnInPlace(next);
+    return commit(next);
+  }
+  if (action === ActionType.COUP) {
+    next.phase = GamePhase.CHALLENGE_LOSS;
+    next.playerToLoseInfluence = target!;
+    next.waitingForResponseFrom = [target!];
+    return commit(next);
   }
 
-  // Validation
-  if (actor.coins >= 10 && canonicalAction !== ActionType.COUP) {
-    log(state, "You have 10+ coins. You MUST Coup.", 'alert');
-    return state; // Invalid move
-  }
-  if (canonicalAction === ActionType.COUP && actor.coins < 7) return state;
-  if (canonicalAction === ActionType.ASSASSINATE && actor.coins < 3) return state;
-
-  log(state, `${actor.name} declares ${canonicalAction}${targetId ? ` on ${state.players.find(p => p.id === targetId)?.name}` : ''}.`);
-
-  const newState = { ...state, pendingAction: { actorId: actor.id, action: canonicalAction, targetId } };
-
-  // Payment costs are deducted immediately? In some rules yes, but if challenged successfully, coins return? 
-  // Coup/Assassinate cost is spent. If Assassinate is blocked, coins spent. If Challenged and lost, coins spent?
-  // Simplification: Deduct coins now.
-  if (canonicalAction === ActionType.COUP) newState.players[state.currentPlayerIndex].coins -= 7;
-  if (canonicalAction === ActionType.ASSASSINATE) newState.players[state.currentPlayerIndex].coins -= 3;
-
-  // Next Phase logic
-  if (canonicalAction === ActionType.INCOME) {
-    // Unblockable, unchallengeable
-    newState.players[state.currentPlayerIndex].coins += 1;
-    log(newState, `${actor.name} gained 1 coin.`);
-    return nextTurn(newState);
-  }
-
-  if (canonicalAction === ActionType.COUP) {
-    // Unblockable, unchallengeable
-    if (!targetId) return state;
-    newState.phase = GamePhase.CHALLENGE_LOSS;
-    newState.playerToLoseInfluence = targetId;
-    newState.waitingForResponseFrom = [targetId];
-    return newState;
-  }
-
-  // All other actions can be challenged
-  newState.phase = GamePhase.ACTION_DECLARED;
-  newState.waitingForResponseFrom = state.players
-    .filter(p => p.id !== actor.id && !p.isEliminated)
-    .map(p => p.id);
-
-  return newState;
+  next.phase = GamePhase.ACTION_DECLARED;
+  next.waitingForResponseFrom = next.players.filter(player => player.id !== actorId && !player.isEliminated).map(player => player.id);
+  return commit(next);
 };
 
 export const resolveActionSuccess = (state: GameState): GameState => {
-  const action = state.pendingAction!;
-  const actorIndex = state.players.findIndex(p => p.id === action.actorId);
-  const targetIndex = action.targetId ? state.players.findIndex(p => p.id === action.targetId) : -1;
-
-  switch (action.action) {
-    case ActionType.FOREIGN_AID:
-      state.players[actorIndex].coins += 2;
-      log(state, `${state.players[actorIndex].name} collected Foreign Aid.`);
-      break;
-    case ActionType.TAX:
-      state.players[actorIndex].coins += 3;
-      log(state, `${state.players[actorIndex].name} collected Tax.`);
-      break;
-    case ActionType.STEAL:
-      if (targetIndex !== -1) {
-        const stolen = Math.min(2, state.players[targetIndex].coins);
-        state.players[targetIndex].coins -= stolen;
-        state.players[actorIndex].coins += stolen;
-        log(state, `${state.players[actorIndex].name} stole ${stolen} from ${state.players[targetIndex].name}.`);
-      }
-      break;
-    case ActionType.EXCHANGE:
-      // Simplified exchange: draw 2, shuffle, remove 2 (Logic is complex for UI, simplified here to just shuffling cards for variety)
-      // In a real app, we need a modal to pick cards. 
-      // For this demo: "Ambassador shuffles your cards with the deck."
-      const player = state.players[actorIndex];
-      const currentCards = player.cards.filter(c => !c.isRevealed).map(c => c.type);
-      const newCards = [state.deck.pop()!, state.deck.pop()!];
-      state.deck.push(...currentCards); // Put old back
-      state.deck = shuffle(state.deck); // Shuffle
-      // Assign new cards (keeping IDs logic simple)
-      const kept1 = newCards[0] || state.deck.pop()!;
-      const kept2 = newCards[1] || state.deck.pop()!;
-
-      // Reset player cards (keeping revealed status if they had revealed ones? No, only unrevealed are exchanged)
-      // Rebuilding player hand
-      const revealed = player.cards.filter(c => c.isRevealed);
-      player.cards = [...revealed, { id: generateId(), type: kept1, isRevealed: false }];
-      if (currentCards.length > 1) {
-        player.cards.push({ id: generateId(), type: kept2, isRevealed: false });
-      }
-      log(state, `${player.name} exchanged cards with the Court deck.`);
-      break;
-    case ActionType.ASSASSINATE:
-      if (targetIndex !== -1) {
-        state.phase = GamePhase.CHALLENGE_LOSS;
-        state.playerToLoseInfluence = state.players[targetIndex].id;
-        state.waitingForResponseFrom = [state.players[targetIndex].id];
-        log(state, "Assassination successful! Target must lose influence.");
-        return state; // Do not go to next turn yet
-      }
-      break;
-  }
-
-  return nextTurn(state);
+  if (!state.pendingAction) return state;
+  const next = cloneState(state);
+  resolveActionSuccessInPlace(next);
+  return commit(next);
 };
 
 export const handleChallenge = (state: GameState, challengerId: string): GameState => {
-  const challenger = state.players.find(p => p.id === challengerId)!;
+  if (!canRespond(state, challengerId) || ![GamePhase.ACTION_DECLARED, GamePhase.BLOCK_DECLARED].includes(state.phase)) return state;
+  const next = cloneState(state);
+  const challenger = playerById(next, challengerId)!;
 
-  if (state.phase === GamePhase.ACTION_DECLARED) {
-    const actorId = state.pendingAction!.actorId;
-    const actor = state.players.find(p => p.id === actorId)!;
-    const action = state.pendingAction!.action;
-
-    // Determine required card
-    let requiredCard = CardType.UNKNOWN;
-
-    // We must handle string comparisons robustly because AI might send "STEAL" or "Steal"
-    const actionUpper = action.toUpperCase();
-
-    if (actionUpper === 'TAX') requiredCard = CardType.DUKE;
-    if (actionUpper === 'ASSASSINATE') requiredCard = CardType.ASSASSIN;
-    if (actionUpper === 'STEAL') requiredCard = CardType.CAPTAIN;
-    if (actionUpper === 'EXCHANGE') requiredCard = CardType.AMBASSADOR;
-
-    if (actionUpper === 'FOREIGN_AID' || actionUpper === 'FOREIGN AID' || actionUpper === 'INCOME' || actionUpper === 'COUP') {
-      log(state, `${challenger.name} tried to challenge ${action}, which is unchallengeable!`, 'alert');
-      return state;
-    }
-
-    log(state, `${challenger.name} challenges ${actor.name}'s ${action}!`);
-
-    const hasCard = actor.cards.some(c => !c.isRevealed && c.type === requiredCard);
-
-    if (hasCard) {
-      log(state, `${actor.name} reveals ${requiredCard}! Challenge FAILED.`);
-      // Challenger loses influence
-      state.phase = GamePhase.CHALLENGE_LOSS;
-      state.playerToLoseInfluence = challengerId;
-      state.waitingForResponseFrom = [challengerId];
-
-      // Actor shuffles revealed card back and gets new one
-      const cardIdx = actor.cards.findIndex(c => !c.isRevealed && c.type === requiredCard);
-      state.deck.push(actor.cards[cardIdx].type);
-      state.deck = shuffle(state.deck);
-      actor.cards[cardIdx].type = state.deck.pop()!;
-      actor.cards[cardIdx].id = generateId(); // New ID to prevent tracking
-
-      // If challenge failed, the action usually proceeds. 
-      // BUT, we first need to resolve the influence loss of the challenger.
-      // We set a flag in state to resume action after influence loss?
-      // Or simply resolve action now if it doesn't require further input?
-      // To simplify: The action SUCCEEDS immediately after the penalty is paid. 
-      // We'll handle this in the loseCard function.
+  if (next.phase === GamePhase.ACTION_DECLARED && next.pendingAction) {
+    const action = next.pendingAction;
+    const actor = playerById(next, action.actorId)!;
+    const required = new Map<ActionType, CardType>([
+      [ActionType.TAX, CardType.DUKE], [ActionType.ASSASSINATE, CardType.ASSASSIN], [ActionType.STEAL, CardType.CAPTAIN], [ActionType.EXCHANGE, CardType.AMBASSADOR],
+    ]).get(action.action);
+    if (!required) return state;
+    log(next, challenger.name + " challenges " + actor.name + "'s " + action.action + "!");
+    const cardIndex = actor.cards.findIndex(card => !card.isRevealed && card.type === required);
+    if (cardIndex >= 0) {
+      log(next, actor.name + " reveals " + required + "! Challenge FAILED.");
+      next.phase = GamePhase.CHALLENGE_LOSS;
+      next.playerToLoseInfluence = challengerId;
+      next.waitingForResponseFrom = [challengerId];
+      next.deck.push(actor.cards[cardIndex].type);
+      next.deck = shuffle(next.deck);
+      actor.cards[cardIndex] = { ...actor.cards[cardIndex], id: generateId(), type: next.deck.pop()! };
     } else {
-      log(state, `${actor.name} DOES NOT have ${requiredCard}! Challenge WON.`);
-      // Actor loses influence
-      state.phase = GamePhase.CHALLENGE_LOSS;
-      state.playerToLoseInfluence = actorId;
-      state.waitingForResponseFrom = [actorId];
-      // Action is canceled
-      state.pendingAction = null;
+      log(next, actor.name + " DOES NOT have " + required + "! Challenge WON.");
+      next.phase = GamePhase.CHALLENGE_LOSS;
+      next.playerToLoseInfluence = actor.id;
+      next.waitingForResponseFrom = [actor.id];
+      next.pendingAction = null;
     }
-  } else if (state.phase === GamePhase.BLOCK_DECLARED) {
-    const blockerId = state.pendingBlock!.blockerId;
-    const blocker = state.players.find(p => p.id === blockerId)!;
-    const claim = state.pendingBlock!.cardClaimed;
-
-    log(state, `${challenger.name} challenges ${blocker.name}'s block with ${claim}!`);
-
-    const hasCard = blocker.cards.some(c => !c.isRevealed && c.type === claim);
-
-    if (hasCard) {
-      log(state, `${blocker.name} reveals ${claim}! Challenge FAILED.`);
-      // Challenger loses influence
-      state.phase = GamePhase.CHALLENGE_LOSS;
-      state.playerToLoseInfluence = challengerId;
-      state.waitingForResponseFrom = [challengerId];
-
-      // Swap card
-      const cardIdx = blocker.cards.findIndex(c => !c.isRevealed && c.type === claim);
-      state.deck.push(blocker.cards[cardIdx].type);
-      state.deck = shuffle(state.deck);
-      blocker.cards[cardIdx].type = state.deck.pop()!;
-
-      // Block stands, Action fails. 
-      state.pendingAction = null;
-    } else {
-      log(state, `${blocker.name} DOES NOT have ${claim}! Challenge WON.`);
-      state.phase = GamePhase.CHALLENGE_LOSS;
-      state.playerToLoseInfluence = blockerId;
-      state.waitingForResponseFrom = [blockerId];
-      // Block fails, Action proceeds.
-      state.pendingBlock = null;
-      // We will execute the action after the penalty in `loseCard`.
-    }
+    return commit(next);
   }
 
-  return { ...state };
+  if (next.phase === GamePhase.BLOCK_DECLARED && next.pendingBlock) {
+    const blocker = playerById(next, next.pendingBlock.blockerId)!;
+    const claim = next.pendingBlock.cardClaimed;
+    log(next, challenger.name + " challenges " + blocker.name + "'s block with " + claim + "!");
+    const cardIndex = blocker.cards.findIndex(card => !card.isRevealed && card.type === claim);
+    if (cardIndex >= 0) {
+      log(next, blocker.name + " reveals " + claim + "! Challenge FAILED.");
+      next.phase = GamePhase.CHALLENGE_LOSS;
+      next.playerToLoseInfluence = challengerId;
+      next.waitingForResponseFrom = [challengerId];
+      next.deck.push(blocker.cards[cardIndex].type);
+      next.deck = shuffle(next.deck);
+      blocker.cards[cardIndex] = { ...blocker.cards[cardIndex], id: generateId(), type: next.deck.pop()! };
+    } else {
+      log(next, blocker.name + " DOES NOT have " + claim + "! Challenge WON.");
+      next.phase = GamePhase.CHALLENGE_LOSS;
+      next.playerToLoseInfluence = blocker.id;
+      next.waitingForResponseFrom = [blocker.id];
+      next.pendingBlock = null;
+    }
+    return commit(next);
+  }
+  return state;
 };
 
 export const handleBlock = (state: GameState, blockerId: string, cardClaim: CardType): GameState => {
-  log(state, `${state.players.find(p => p.id === blockerId)?.name} blocks using ${cardClaim}.`);
-  state.pendingBlock = { blockerId, cardClaimed: cardClaim };
-  state.phase = GamePhase.BLOCK_DECLARED;
-  state.waitingForResponseFrom = state.players
-    .filter(p => p.id !== blockerId && !p.isEliminated)
-    .map(p => p.id);
-  return { ...state };
+  if (!canRespond(state, blockerId) || state.phase !== GamePhase.ACTION_DECLARED || !state.pendingAction) return state;
+  const action = state.pendingAction;
+  const valid = (action.action === ActionType.FOREIGN_AID && cardClaim === CardType.DUKE)
+    || (action.action === ActionType.STEAL && action.targetId === blockerId && [CardType.CAPTAIN, CardType.AMBASSADOR].includes(cardClaim))
+    || (action.action === ActionType.ASSASSINATE && action.targetId === blockerId && cardClaim === CardType.CONTESSA);
+  if (!valid) return state;
+
+  const next = cloneState(state);
+  log(next, playerById(next, blockerId)?.name + " blocks using " + cardClaim + ".");
+  next.pendingBlock = { blockerId, cardClaimed: cardClaim };
+  next.phase = GamePhase.BLOCK_DECLARED;
+  next.waitingForResponseFrom = next.players.filter(player => player.id !== blockerId && !player.isEliminated).map(player => player.id);
+  return commit(next);
 };
 
 export const handlePass = (state: GameState, playerId: string): GameState => {
-  const player = state.players.find(p => p.id === playerId);
-  if (player) {
-    log(state, `${player.name} chooses to PASS.`);
+  if (!canRespond(state, playerId)) return state;
+  const next = cloneState(state);
+  log(next, playerById(next, playerId)?.name + " chooses to PASS.");
+  next.waitingForResponseFrom = next.waitingForResponseFrom.filter(id => id !== playerId);
+  if (next.waitingForResponseFrom.length === 0) {
+    if (next.phase === GamePhase.ACTION_DECLARED) resolveActionSuccessInPlace(next);
+    else if (next.phase === GamePhase.BLOCK_DECLARED) {
+      log(next, "Block stands. Action thwarted.");
+      nextTurnInPlace(next);
+    }
   }
-  const newState = {
-    ...state,
-    waitingForResponseFrom: state.waitingForResponseFrom.filter(id => id !== playerId)
-  };
-  return newState;
+  return commit(next);
 };
 
 export const handleLoseCard = (state: GameState, playerId: string, cardId: string): GameState => {
-  const player = state.players.find(p => p.id === playerId)!;
-  const card = player.cards.find(c => c.id === cardId);
+  if (state.phase !== GamePhase.CHALLENGE_LOSS || state.playerToLoseInfluence !== playerId || !canRespond(state, playerId)) return state;
+  const player = playerById(state, playerId);
+  const originalCard = player?.cards.find(card => card.id === cardId && !card.isRevealed);
+  if (!player || !originalCard) return state;
 
-  if (card) {
-    card.isRevealed = true;
-    log(state, `${player.name} lost influence: ${card.type}.`, 'danger');
+  const next = cloneState(state);
+  const nextPlayer = playerById(next, playerId)!;
+  const card = nextPlayer.cards.find(candidate => candidate.id === cardId)!;
+  card.isRevealed = true;
+  log(next, nextPlayer.name + " lost influence: " + card.type + ".", 'danger');
+  if (nextPlayer.cards.every(candidate => candidate.isRevealed)) {
+    nextPlayer.isEliminated = true;
+    nextPlayer.placement = next.players.filter(candidate => !candidate.isEliminated).length + 1;
+    log(next, nextPlayer.name + " has been exiled!", 'danger');
   }
 
-  // Check elimination
-  const activeCards = player.cards.filter(c => !c.isRevealed);
-  if (activeCards.length === 0) {
-    player.isEliminated = true;
-
-    // Determine placement (if 3 players alive before this, this player gets 3. If 2, they get 2)
-    const aliveCount = state.players.filter(p => !p.isEliminated).length;
-    player.placement = aliveCount + 1; // 2 alive -> this player is 3rd. 1 alive -> this player is 2nd.
-
-    log(state, `${player.name} has been exiled!`, 'danger');
-  }
-
-  // Determine what happens next based on what led to this loss
-
-  // 1. Was it a Coup?
-  if (state.pendingAction?.action === ActionType.COUP && state.pendingAction.targetId === playerId) {
-    return nextTurn(state);
-  }
-
-  // 2. Was it a successful Assassination (Target lost card)?
-  if (state.pendingAction?.action === ActionType.ASSASSINATE && state.pendingAction.targetId === playerId && state.phase === GamePhase.CHALLENGE_LOSS) {
-    return nextTurn(state);
-  }
-
-  // 3. Was it a failed Challenge against an Action? (Challenger lost card, Action proceeds)
-  // If pendingAction exists and pendingBlock is null, we were in ACTION_DECLARED
-  if (state.pendingAction && !state.pendingBlock) {
-    // If the action was Assassinate, and the challenger was NOT the target, the target still has a chance to block.
-    // If the action was Assassinate and challenger WAS target, they lost a card for challenging. 
-    // Can they still block? Rules say: "If you challenge, you cannot block."
-    // So action resolves.
-    return resolveActionSuccess(state);
-  }
-
-  // 4. Was it a failed Challenge against a Block? (Challenger lost card, Block stands)
-  if (state.pendingBlock) {
-    // Block stands. Action canceled.
-    log(state, "Block stands. Action thwarted.");
-    return nextTurn(state);
-  }
-
-  // 5. Was it a successful Challenge against an Action? (Actor lost card, Action canceled)
-  // We detected this if pendingAction was set to null in handleChallenge? 
-  // Wait, in handleChallenge we set pendingAction = null if challenge won.
-  // So if pendingAction is null, turn ends.
-  if (!state.pendingAction && !state.pendingBlock) {
-    return nextTurn(state);
-  }
-
-  // 6. Successful Challenge against Block (Blocker lost card, Action proceeds)
-  // In handleChallenge, if Block failed, we set pendingBlock to null, but kept pendingAction.
-  if (state.pendingAction && state.phase === GamePhase.CHALLENGE_LOSS) {
-    return resolveActionSuccess(state);
-  }
-
-  return nextTurn(state);
+  if (next.pendingAction?.action === ActionType.COUP && next.pendingAction.targetId === playerId) nextTurnInPlace(next);
+  else if (next.pendingAction?.action === ActionType.ASSASSINATE && next.pendingAction.targetId === playerId) nextTurnInPlace(next);
+  else if (next.pendingBlock) {
+    log(next, "Block stands. Action thwarted.");
+    nextTurnInPlace(next);
+  } else if (next.pendingAction) resolveActionSuccessInPlace(next);
+  else nextTurnInPlace(next);
+  return commit(next);
 };

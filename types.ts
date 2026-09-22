@@ -68,6 +68,7 @@ export interface GameLogEntry {
   text: string;
   type: 'info' | 'alert' | 'success' | 'danger';
   timestamp: number;
+  coins?: Record<string, number>;
 }
 
 export interface PendingAction {
@@ -103,6 +104,7 @@ export interface GameState {
   winner: string | null;
   startedAt: number;
   gameId: string;
+  revision: number;
 }
 
 // AI Decision Types
