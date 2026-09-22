@@ -112,7 +112,10 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           if (previous.phase === GamePhase.TURN_START) {
             const action = decision.type === 'ACTION' ? decision.payload?.action : undefined;
             const target = decision.payload?.targetId;
-            if (action) return handlePlayerAction(previous, aiPlayer.id, action, target);
+            if (action) {
+              const applied = handlePlayerAction(previous, aiPlayer.id, action, target);
+              if (applied !== previous) return applied;
+            }
             const fallbackTarget = previous.players.find(player => player.id !== aiPlayer.id && !player.isEliminated)?.id;
             return previous.players.find(player => player.id === aiPlayer.id)?.coins >= 10
               ? handlePlayerAction(previous, aiPlayer.id, ActionType.COUP, fallbackTarget)
