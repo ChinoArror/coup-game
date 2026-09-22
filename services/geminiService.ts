@@ -25,7 +25,8 @@ const getPublicState = (gameState: GameState, aiPlayerId: string) => {
 
 export const getAIDecision = async (
   gameState: GameState,
-  aiPlayer: Player
+  aiPlayer: Player,
+  signal?: AbortSignal,
 ): Promise<AIDecision> => {
 
   const publicState = getPublicState(gameState, aiPlayer.id);
@@ -37,6 +38,11 @@ export const getAIDecision = async (
   if (gameState.phase === GamePhase.TURN_START) {
     goal = "Choose an action. You generally want to accumulate coins to Coup (7 coins) or use character abilities (Tax, Steal, Assassinate). If you have 10+ coins, you MUST Coup.";
     validOptions = `Valid Actions: ${Object.values(ActionType).join(', ')}. NOTE: If coins >= 10, only COUP is allowed.`;
+  } else if (gameState.pendingAction?.targetId === aiPlayer.id && !gameState.pendingBlock) {
+    goal = `You are being targeted by ${gameState.pendingAction.action}. You MUST choose to BLOCK with a valid counter claim or PASS to allow it.`;
+    if (gameState.pendingAction.action === ActionType.ASSASSINATE) validOptions = "BLOCK (Claim Contessa), PASS (Allow)";
+    else if (gameState.pendingAction.action === ActionType.STEAL) validOptions = "BLOCK (Claim Captain/Ambassador), PASS (Allow)";
+    else validOptions = "PASS";
   } else if (gameState.phase === GamePhase.ACTION_DECLARED) {
     goal = `Player ${gameState.pendingAction?.actorId} declared ${gameState.pendingAction?.action}. Evaluate if they are lying. You MUST choose to either CHALLENGE or PASS. If the action is Foreign Aid, you can BLOCK (claiming Duke).`;
     validOptions = "CHALLENGE, PASS" + (gameState.pendingAction?.action === ActionType.FOREIGN_AID ? ", BLOCK (claim Duke)" : "");
@@ -46,11 +52,6 @@ export const getAIDecision = async (
   } else if (gameState.phase === GamePhase.CHALLENGE_LOSS) {
     goal = "You lost a challenge or were Couped. You must choose a card ID to lose (reveal).";
     validOptions = `Card IDs: ${aiPlayer.cards.filter(c => !c.isRevealed).map(c => c.id).join(', ')}`;
-  } else if (gameState.pendingAction?.targetId === aiPlayer.id && !gameState.pendingBlock) {
-    goal = `You are being targeted by ${gameState.pendingAction.action}. You MUST choose to BLOCK (claim a counter card) or ALLOW (Pass).`;
-    if (gameState.pendingAction.action === ActionType.ASSASSINATE) validOptions = "BLOCK (Claim Contessa), PASS (Allow)";
-    else if (gameState.pendingAction.action === ActionType.STEAL) validOptions = "BLOCK (Claim Captain/Ambassador), PASS (Allow)";
-    else validOptions = "PASS";
   }
 
   const baseRules = `
@@ -143,8 +144,9 @@ export const getAIDecision = async (
       body: JSON.stringify({
         playerSlot: getPlayerSlot(aiPlayer.id),
         systemInstruction,
-        userMessage: `Game State: ${JSON.stringify(publicState)}. Make your move now.`
-      })
+        userMessage: `Game State: ${JSON.stringify(publicState)}. Legal opposing target IDs: ${gameState.players.filter(player => player.id !== aiPlayer.id && !player.isEliminated).map(player => player.id).join(', ')}. Never target yourself or an eliminated player. Make your move now.`
+      }),
+      signal,
     });
 
     if (!response.ok) {
@@ -190,6 +192,7 @@ export const getAIDecision = async (
     } as AIDecision;
 
   } catch (error: any) {
+    if (error?.name === 'AbortError') throw error;
     console.error("AI Error:", error);
     alert(`[SYSTEM ALERT] AI (${aiPlayer.name}) crashed during thought process!\n\nReason: ${error.message}\n\nThis usually happens if your API Key in Cloudflare Secrets is missing/invalid, or the Model name is wrong. The AI will now skip its turn to prevent crashing the game.`);
     // Fallback safe move to prevent game freeze

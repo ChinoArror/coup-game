@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { GameState, GamePhase, ActionType, CardType, Player } from './types';
-import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handleLoseCard, handlePass, nextTurn, resolveActionSuccess } from './utils/gameEngine';
+import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handleLoseCard, handlePass } from './utils/gameEngine';
 import { getAIDecision } from './services/geminiService';
 import { canAccessAdminDash } from './services/adminAccess';
+import { createAIRequestContext, isAIRequestCurrent } from './services/aiDecisionGuard';
 import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut } from 'lucide-react';
 
 export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard') => void, onLogout: () => void }) {
@@ -75,88 +76,58 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   useEffect(() => {
     if (!gameState || gameState.phase === GamePhase.GAME_OVER) return;
 
+    const controller = new AbortController();
+    let cancelled = false;
+
     const processAI = async () => {
-      // 1. Is it an AI's turn to Act?
       const currentPlayer = gameState.players[gameState.currentPlayerIndex];
-      if (currentPlayer.isAI && gameState.phase === GamePhase.TURN_START) {
-        setAiThinking(currentPlayer.name);
-        const decision = await getAIDecision(gameState, currentPlayer);
-        setAiThinking(null);
-
-        if (decision.type === 'ACTION' && decision.payload?.action) {
-          setGameState(prev => prev ? handlePlayerAction(prev, decision.payload!.action! as ActionType, decision.payload!.targetId) : null);
-        } else {
-          // Fallback Income
-          setGameState(prev => prev ? handlePlayerAction(prev, ActionType.INCOME) : null);
-        }
-        return;
-      }
-
-      // 2. Is AI waiting to respond (Challenge/Block)?
       const aiResponders = gameState.waitingForResponseFrom.filter(id => {
         const p = gameState.players.find(pl => pl.id === id);
         return p && p.isAI;
       });
 
-      if (aiResponders.length > 0) {
-        // Process one AI at a time
-        const responderId = aiResponders[0];
-        const responder = gameState.players.find(p => p.id === responderId)!;
+      const aiPlayer = gameState.phase === GamePhase.TURN_START && currentPlayer.isAI
+        ? currentPlayer
+        : aiResponders.length > 0 ? gameState.players.find(player => player.id === aiResponders[0]) : undefined;
+      if (!aiPlayer) return;
 
-        setAiThinking(responder.name);
-        const decision = await getAIDecision(gameState, responder);
-        setAiThinking(null);
-
-        if (decision.type === 'CHALLENGE') {
-          setGameState(prev => prev ? handleChallenge(prev, responderId) : null);
-        } else if (decision.type === 'BLOCK' && decision.payload?.blockCard) {
-          setGameState(prev => prev ? handleBlock(prev, responderId, decision.payload.blockCard) : null);
-        } else if ((decision.type === 'LOSE_CARD' && decision.payload?.cardToLose) || gameState.phase === GamePhase.CHALLENGE_LOSS) {
-          const cardId = decision.payload?.cardToLose || responder.cards.filter(c => !c.isRevealed)[0]?.id;
-          if (cardId) {
-            setGameState(prev => prev ? handleLoseCard(prev, responderId, cardId) : null);
+      const context = createAIRequestContext(gameState, aiPlayer.id);
+      setAiThinking(aiPlayer.name);
+      try {
+        const decision = await getAIDecision(gameState, aiPlayer, controller.signal);
+        if (cancelled) return;
+        setGameState(previous => {
+          if (!previous || !isAIRequestCurrent(previous, context)) return previous;
+          if (previous.phase === GamePhase.TURN_START) {
+            const action = decision.type === 'ACTION' ? decision.payload?.action : undefined;
+            const target = decision.payload?.targetId;
+            if (action) return handlePlayerAction(previous, aiPlayer.id, action, target);
+            const fallbackTarget = previous.players.find(player => player.id !== aiPlayer.id && !player.isEliminated)?.id;
+            return previous.players.find(player => player.id === aiPlayer.id)?.coins >= 10
+              ? handlePlayerAction(previous, aiPlayer.id, ActionType.COUP, fallbackTarget)
+              : handlePlayerAction(previous, aiPlayer.id, ActionType.INCOME);
           }
-        } else {
-          // Pass - Remove from waiting list and log
-          setGameState(prev => {
-            if (!prev) return null;
-            // Use handlePass to log the action
-            const afterPassState = handlePass({ ...prev }, responderId);
-
-            // If everyone passed, resolve the phase
-            if (afterPassState.waitingForResponseFrom.length === 0) {
-              if (afterPassState.phase === GamePhase.ACTION_DECLARED) {
-                // Simplified logic: If nobody challenged, check for Blocks.
-                const action = afterPassState.pendingAction!.action;
-                const target = afterPassState.pendingAction!.targetId;
-
-                if ([ActionType.FOREIGN_AID, ActionType.ASSASSINATE, ActionType.STEAL].includes(action)) {
-                  // Move to block phase logic or resolve
-                  let blockers: string[] = [];
-                  if (action === ActionType.FOREIGN_AID) blockers = afterPassState.players.filter(p => p.id !== afterPassState.pendingAction!.actorId && !p.isEliminated).map(p => p.id);
-                  else if (target) blockers = [target];
-
-                  if (blockers.length === 0) return resolveActionSuccess({ ...afterPassState });
-
-                  // NOTE: For this specific state machine, we are collapsing "Waiting for Challenge" and "Waiting for Block" into one wait cycle in ACTION_DECLARED for simplicity. 
-                  // If everyone passed the chance to challenge AND block (implied by passing in this UI), we resolve.
-                  return resolveActionSuccess({ ...afterPassState });
-                }
-                return resolveActionSuccess({ ...afterPassState });
-              }
-              if (afterPassState.phase === GamePhase.BLOCK_DECLARED) {
-                // Block stands -> Action fails.
-                return nextTurn({ ...afterPassState, pendingAction: null, pendingBlock: null });
-              }
-            }
-            return afterPassState;
-          });
-        }
+          if (decision.type === 'CHALLENGE') return handleChallenge(previous, aiPlayer.id);
+          if (decision.type === 'BLOCK' && decision.payload?.blockCard) return handleBlock(previous, aiPlayer.id, decision.payload.blockCard);
+          if (previous.phase === GamePhase.CHALLENGE_LOSS) {
+            const cardId = decision.payload?.cardToLose || previous.players.find(player => player.id === aiPlayer.id)?.cards.find(card => !card.isRevealed)?.id;
+            return cardId ? handleLoseCard(previous, aiPlayer.id, cardId) : previous;
+          }
+          return handlePass(previous, aiPlayer.id);
+        });
+      } catch (error: any) {
+        if (error?.name !== 'AbortError') console.error('AI decision failed', error);
+      } finally {
+        if (!cancelled) setAiThinking(null);
       }
     };
 
     const timer = setTimeout(processAI, 1500); // Delay for realism
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [gameState]);
 
   // --- UI Handlers ---
@@ -168,7 +139,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
       return;
     }
     setSelectingTargetFor(null);
-    setGameState(handlePlayerAction(gameState, action, targetId));
+    setGameState(handlePlayerAction(gameState, 'human', action, targetId));
   };
 
   const onTargetSelect = (targetId: string) => {
@@ -183,50 +154,22 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
 
   const onChallenge = () => {
     if (!gameState) return;
-    setGameState(handleChallenge(gameState, 'human'));
+    setGameState(prev => prev ? handleChallenge(prev, 'human') : null);
   };
 
   const onBlock = (card: CardType) => {
     if (!gameState) return;
-    setGameState(handleBlock(gameState, 'human', card));
+    setGameState(prev => prev ? handleBlock(prev, 'human', card) : null);
   };
 
   const onPass = () => {
     if (!gameState) return;
-    setGameState(prev => {
-      if (!prev) return null;
-
-      // Use handlePass to log the action
-      const afterPassState = handlePass({ ...prev }, 'human');
-
-      if (afterPassState.waitingForResponseFrom.length === 0) {
-        // Check transition logic (Simplified)
-        if (afterPassState.phase === GamePhase.ACTION_DECLARED) {
-          const action = afterPassState.pendingAction!.action;
-          if ([ActionType.FOREIGN_AID, ActionType.ASSASSINATE, ActionType.STEAL].includes(action)) {
-            // Check if human is the target/blocker for the NEXT phase
-            let potentialBlockers: string[] = [];
-            if (action === ActionType.FOREIGN_AID) potentialBlockers = afterPassState.players.filter(p => !p.isEliminated && p.id !== afterPassState.pendingAction?.actorId).map(p => p.id);
-            if (action === ActionType.STEAL || action === ActionType.ASSASSINATE) potentialBlockers = [afterPassState.pendingAction!.targetId!];
-
-            if (potentialBlockers.length > 0) {
-              return resolveActionSuccess({ ...afterPassState });
-            }
-          }
-          return resolveActionSuccess({ ...afterPassState });
-        }
-        if (afterPassState.phase === GamePhase.BLOCK_DECLARED) {
-          // Block stands
-          return nextTurn({ ...afterPassState, pendingAction: null, pendingBlock: null });
-        }
-      }
-      return afterPassState;
-    });
+    setGameState(prev => prev ? handlePass(prev, 'human') : null);
   };
 
   const onLoseCard = (cardId: string) => {
     if (!gameState) return;
-    setGameState(handleLoseCard(gameState, 'human', cardId));
+    setGameState(prev => prev ? handleLoseCard(prev, 'human', cardId) : null);
   };
 
   const resetGame = async () => {
