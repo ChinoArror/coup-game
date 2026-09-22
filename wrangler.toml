@@ -28,4 +28,4 @@ class_name = "RoomGame"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RoomGame"]
+new_sqlite_classes = ["RoomGame"]
