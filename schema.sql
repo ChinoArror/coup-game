@@ -56,6 +56,24 @@ CREATE TABLE room_invites (
   revoked_at INTEGER
 );
 
+CREATE TABLE room_snapshots (
+  room_id TEXT PRIMARY KEY,
+  revision INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  clocks_json TEXT NOT NULL,
+  saved_at INTEGER NOT NULL
+);
+
+CREATE TABLE room_events (
+  room_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  actor_key TEXT NOT NULL,
+  client_action_id TEXT NOT NULL,
+  event_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(room_id, actor_key, client_action_id)
+);
+
 -- Private completed-match snapshots. The Worker also creates this table lazily
 -- so existing deployed D1 databases receive the feature without a reset.
 CREATE TABLE game_history (

@@ -18,11 +18,21 @@ type ProcessRecord = {
   revision: number;
   started_at: number;
 };
+type RoomRecord = {
+  id: string; owner_uuid: string; owner_is_admin: number; status: string; seat_count: number;
+  ai_channels_json: string; time_controls_json: string; durable_object_id: string;
+  created_at: number; updated_at: number; closed_at?: number | null;
+};
+type RoomMemberRecord = { room_id: string; user_uuid: string; display_name: string; seat_index: number; is_ready: number; joined_at: number; left_at?: number | null };
+type RoomInviteRecord = { id: string; room_id: string; token_hash: string; created_by_uuid: string; expires_at: number; max_uses: number; use_count: number; revoked_at?: number | null };
 
 class FakeDatabase {
   readonly config: ConfigState = {};
   readonly history = new Map<string, HistoryRecord>();
   readonly process = new Map<string, ProcessRecord>();
+  readonly rooms = new Map<string, RoomRecord>();
+  readonly roomMembers = new Map<string, RoomMemberRecord>();
+  readonly roomInvites = new Map<string, RoomInviteRecord>();
 
   prepare(sql: string) {
     let values: unknown[] = [];
@@ -48,6 +58,17 @@ class FakeDatabase {
   private async first(sql: string, values: unknown[]) {
     if (sql.includes('SELECT * FROM users')) return null;
     if (sql.includes('SELECT * FROM process WHERE user_uuid = ?')) return this.process.get(String(values[0])) || null;
+    if (sql.includes('SELECT * FROM rooms WHERE id = ?')) return this.rooms.get(String(values[0])) || null;
+    if (sql.includes('SELECT * FROM room_members WHERE room_id = ? AND user_uuid = ?')) {
+      const record = this.roomMembers.get(`${values[0]}:${values[1]}`);
+      return record && !record.left_at ? record : null;
+    }
+    if (sql.includes('SELECT * FROM room_invites WHERE room_id = ? AND token_hash = ?')) {
+      return [...this.roomInvites.values()].find(record => record.room_id === String(values[0]) && record.token_hash === String(values[1]) && !record.revoked_at) || null;
+    }
+    if (sql.includes('SELECT * FROM room_invites WHERE token_hash = ?')) {
+      return [...this.roomInvites.values()].find(record => record.token_hash === String(values[0]) && !record.revoked_at) || null;
+    }
     if (sql.includes('SELECT channel_id FROM ai_player_config')) {
       const slot = String(values[0]);
       return this.config[slot] ? { channel_id: this.config[slot] } : null;
@@ -60,6 +81,13 @@ class FakeDatabase {
   }
 
   private async all(sql: string, values: unknown[]) {
+    if (sql.includes('FROM room_members WHERE room_id = ? AND left_at IS NULL')) {
+      return { results: [...this.roomMembers.values()].filter(record => record.room_id === String(values[0]) && !record.left_at).sort((a, b) => a.seat_index - b.seat_index) };
+    }
+    if (sql.includes('FROM rooms r JOIN room_members m')) {
+      const userUuid = String(values[0]);
+      return { results: [...this.roomMembers.values()].filter(member => member.user_uuid === userUuid && !member.left_at).map(member => ({ ...this.rooms.get(member.room_id), is_ready: member.is_ready })) };
+    }
     if (sql.includes('FROM ai_player_config')) {
       return { results: Object.entries(this.config).map(([player_slot, channel_id]) => ({ player_slot, channel_id })) };
     }
@@ -75,6 +103,32 @@ class FakeDatabase {
   }
 
   private async run(sql: string, values: unknown[]) {
+    if (sql.includes('INSERT INTO rooms')) {
+      const [id, owner_uuid, owner_is_admin, status, seat_count, ai_channels_json, time_controls_json, durable_object_id, created_at, updated_at] = values as [string, string, number, string, number, string, string, string, number, number];
+      this.rooms.set(id, { id, owner_uuid, owner_is_admin, status, seat_count, ai_channels_json, time_controls_json, durable_object_id, created_at, updated_at });
+    }
+    if (sql.includes('INSERT INTO room_members')) {
+      const [room_id, user_uuid, display_name, seat_index, is_ready, joined_at] = values as [string, string, string, number, number, number];
+      this.roomMembers.set(`${room_id}:${user_uuid}`, { room_id, user_uuid, display_name, seat_index, is_ready, joined_at });
+    }
+    if (sql.includes('INSERT INTO room_invites')) {
+      const [id, room_id, token_hash, created_by_uuid, expires_at, max_uses, use_count] = values as [string, string, string, string, number, number, number];
+      this.roomInvites.set(id, { id, room_id, token_hash, created_by_uuid, expires_at, max_uses, use_count });
+    }
+    if (sql.includes('UPDATE room_members SET is_ready')) {
+      const record = this.roomMembers.get(`${values[1]}:${values[2]}`);
+      if (record) record.is_ready = Number(values[0]);
+    }
+    if (sql.includes("UPDATE rooms SET status = ?")) {
+      const room = this.rooms.get(String(values[2]));
+      if (room) { room.status = String(values[0]); room.updated_at = Number(values[1]); if (String(values[0]) === 'closed') room.closed_at = Number(values[1]); }
+    }
+    if (sql.includes('UPDATE rooms SET updated_at = ?')) {
+      const room = this.rooms.get(String(values[1])); if (room) room.updated_at = Number(values[0]);
+    }
+    if (sql.includes('UPDATE room_invites SET use_count')) {
+      const invite = this.roomInvites.get(String(values[0])); if (invite) invite.use_count += 1;
+    }
     if (sql.includes('ai_player_config') && values[0] !== undefined) {
       if (sql.includes('INSERT OR IGNORE') && this.config[String(values[0])]) return { success: true };
       this.config[String(values[0])] = String(values[1]);
@@ -140,6 +194,7 @@ function createEnvironment(db = new FakeDatabase()) {
       Model_1: 'gemini-model',
       Model_2: 'deepseek-model',
       Model_3: 'openai-model',
+      ROOM_GAME: undefined as any,
     },
   };
 }
@@ -256,6 +311,44 @@ describe('AI administration and quota routing', () => {
 
     expect(response.status).toBe(503);
     expect(consumeBodies).toEqual([]);
+  });
+});
+
+describe('multiplayer room lifecycle', () => {
+  it('health-checks selected room AIs for the owner before creating and starts only after ready', async () => {
+    const { env, db } = createEnvironment();
+    const { quotaChecks, consumeBodies } = installFetchMock();
+    const pending: Promise<unknown>[] = [];
+    const initialized: any[] = [];
+    env.ROOM_GAME = {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async (request: Request) => {
+        initialized.push(await request.json());
+        return Response.json({ ok: true });
+      } }),
+    };
+    const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } as any;
+    const created = await worker.fetch(request('/api/rooms', 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seatCount: 3, aiChannels: ['1', '3'], timeControls: { stepLimitMs: 30_000 } }),
+    }), env, ctx);
+    await Promise.all(pending);
+    const room = await created.json() as any;
+
+    expect(created.status).toBe(201);
+    expect(room.invite.url).toContain('/game?invite=');
+    expect(quotaChecks).toHaveLength(2);
+    expect(consumeBodies).toHaveLength(2);
+    expect(db.rooms.get(room.id)?.status).toBe('open');
+
+    expect((await worker.fetch(request(`/api/rooms/${room.id}/start`, 'user', { method: 'POST' }), env, ctx)).status).toBe(409);
+    expect((await worker.fetch(request(`/api/rooms/${room.id}/ready`, 'user', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ready: true }) }), env, ctx)).status).toBe(200);
+    const started = await worker.fetch(request(`/api/rooms/${room.id}/start`, 'user', { method: 'POST' }), env, ctx);
+
+    expect(started.status).toBe(200);
+    expect(db.rooms.get(room.id)?.status).toBe('started');
+    expect(initialized[0]).toMatchObject({ type: 'initialize', room: { roomId: room.id, owner: { uuid: 'user-uuid' } } });
+    expect(initialized[0].room.state.players.map((player: any) => player.name)).toEqual(['user', 'I', 'III']);
   });
 });
 

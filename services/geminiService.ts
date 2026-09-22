@@ -1,201 +1,35 @@
-import { GameState, AIDecision, Player, CardType, ActionType, GamePhase } from "../types";
+import { type AIDecision, type GameState, type Player } from '../types';
+import { createAIDecisionRequest } from './aiPrompt';
 
-// Proxy to Cloudflare Worker API
-const API_URL = "/api/ai";
+const API_URL = '/api/ai';
 
 export const getPlayerSlot = (playerId: string): 'alapha' | 'beta' => playerId === 'ai1' ? 'alapha' : 'beta';
 
-// Helper to sanitize state for AI (hide opponent cards)
-const getPublicState = (gameState: GameState, aiPlayerId: string) => {
-  return {
-    phase: gameState.phase,
-    myInfo: gameState.players.find(p => p.id === aiPlayerId),
-    opponents: gameState.players.filter(p => p.id !== aiPlayerId).map(p => ({
-      id: p.id,
-      name: p.name,
-      coins: p.coins,
-      influenceCount: p.cards.filter(c => !c.isRevealed).length,
-      revealedCards: p.cards.filter(c => c.isRevealed).map(c => c.type)
-    })),
-    history: gameState.logs.slice(-6), // Last 6 logs for context
-    pendingAction: gameState.pendingAction,
-    pendingBlock: gameState.pendingBlock
-  };
-};
-
-export const getAIDecision = async (
-  gameState: GameState,
-  aiPlayer: Player,
-  signal?: AbortSignal,
-): Promise<AIDecision> => {
-
-  const publicState = getPublicState(gameState, aiPlayer.id);
-
-  // Construct a prompt based on the specific phase
-  let goal = "";
-  let validOptions = "";
-
-  if (gameState.phase === GamePhase.TURN_START) {
-    goal = "Choose an action. You generally want to accumulate coins to Coup (7 coins) or use character abilities (Tax, Steal, Assassinate). If you have 10+ coins, you MUST Coup.";
-    validOptions = `Valid Actions: ${Object.values(ActionType).join(', ')}. NOTE: If coins >= 10, only COUP is allowed.`;
-  } else if (gameState.pendingAction?.targetId === aiPlayer.id && !gameState.pendingBlock) {
-    goal = `You are being targeted by ${gameState.pendingAction.action}. You MUST choose to BLOCK with a valid counter claim or PASS to allow it.`;
-    if (gameState.pendingAction.action === ActionType.ASSASSINATE) validOptions = "BLOCK (Claim Contessa), PASS (Allow)";
-    else if (gameState.pendingAction.action === ActionType.STEAL) validOptions = "BLOCK (Claim Captain/Ambassador), PASS (Allow)";
-    else validOptions = "PASS";
-  } else if (gameState.phase === GamePhase.ACTION_DECLARED) {
-    goal = `Player ${gameState.pendingAction?.actorId} declared ${gameState.pendingAction?.action}. Evaluate if they are lying. You MUST choose to either CHALLENGE or PASS. If the action is Foreign Aid, you can BLOCK (claiming Duke).`;
-    validOptions = "CHALLENGE, PASS" + (gameState.pendingAction?.action === ActionType.FOREIGN_AID ? ", BLOCK (claim Duke)" : "");
-  } else if (gameState.phase === GamePhase.BLOCK_DECLARED) {
-    goal = `Player ${gameState.pendingBlock?.blockerId} blocked using ${gameState.pendingBlock?.cardClaimed}. Evaluate if they actually have that card. You MUST choose to either CHALLENGE or PASS.`;
-    validOptions = "CHALLENGE, PASS";
-  } else if (gameState.phase === GamePhase.CHALLENGE_LOSS) {
-    goal = "You lost a challenge or were Couped. You must choose a card ID to lose (reveal).";
-    validOptions = `Card IDs: ${aiPlayer.cards.filter(c => !c.isRevealed).map(c => c.id).join(', ')}`;
-  }
-
-  const baseRules = `
-    *** GAME RULES SUMMARY ***
-    1. CARDS: Duke, Assassin, Captain, Ambassador, Contessa. (3 of each in deck).
-    2. GOAL: Be the last player with influence (cards). KILL YOUR OPPONENTS.
-    3. ACTIONS & CLAIMS:
-       - Income (+1): No claim. Safe.
-       - Foreign Aid (+2): No claim. Blocked by DUKE.
-       - Tax (+3): Claims DUKE.
-       - Steal (+2 from target): Claims CAPTAIN. Blocked by CAPTAIN or AMBASSADOR.
-       - Assassinate (pay 3, kill card): Claims ASSASSIN. Blocked by CONTESSA.
-       - Exchange (swap cards): Claims AMBASSADOR.
-       - Coup (pay 7, kill card): Unblockable. Mandatory at 10+ coins.
-    4. CHALLENGES:
-       - Any action claiming a character (Tax, Steal, Assassinate, Exchange) can be Challenged.
-       - Any Block can be Challenged.
-       - If Challenged:
-         - If you have the card: Reveal it, shuffle it back, draw new one. Challenger loses a card.
-         - If you DO NOT have it: You lose a card. Action fails.
-  `;
-
-  const jsonFormat = `
-    Structure (Flat JSON):
-    {
-      "type": "ACTION" | "CHALLENGE" | "BLOCK" | "PASS" | "LOSE_CARD",
-      "action": "string (ActionType, e.g. TAX, STEAL, ASSASSINATE, FOREIGN_AID, INCOME, COUP)",
-      "targetId": "string (Player ID, if acting on someone)",
-      "cardToLose": "string (Card ID, if losing a card)",
-      "blockCard": "string (CardType, e.g. DUKE, CONTESSA, CAPTAIN, AMBASSADOR if blocking)",
-      "thoughtProcess": "Very brief reasoning (max 1 sentence)."
-    }
-
-    Current Context:
-    Goal: ${goal}
-    Valid Options: ${validOptions}
-  `;
-
-  let systemInstruction = "";
-
-  if (aiPlayer.id === "ai2") {
-    systemInstruction = `
-    You are Deepseek Beta, a highly analytical, ruthless, and calculating AI player for the board game Coup.
-    Your ID is ${aiPlayer.id}.
-    ${baseRules}
-    
-    *** DECISION STRATEGY: CALCULATED ASSASSIN ***
-    1. LOGICAL BLUFFING: You calculate probabilities. Lie if the risk is low, but be convincing.
-    2. STRATEGIC CHALLENGES:
-       - DO NOT challenge every action. Calculate the probability of the opponent lying based on the number of cards in play.
-       - A failed challenge costs you a life (card), so only challenge if you strongly suspect a lie and the risk is worth it. Pass if uncertain.
-       - If you are Targeted by ASSASSINATE or STEAL, weigh the risk. Try to Block if you have or can bluff the card, but challenging blindly is dangerous.
-    3. ENDGAME: Secure 3 coins for Assassination or 7 for Coup early. Preserve your cards wisely.
-
-    *** OUTPUT FORMAT ***
-    You MUST mathematically and psychologically analyze the board state inside <think>...</think> tags BEFORE returning JSON.
-    Keep your <think> phase concise, deep, and focused on the immediate threat to ensure your thinking speed stays around 10-15 seconds.
-    After your <think> tags, return ONLY a valid JSON object. No markdown.
-    ${jsonFormat}
-      `;
-  } else {
-    systemInstruction = `
-    You are Gemini Alpha, a highly unpredictable, aggressive, and fast AI player for the board game Coup.
-    Your ID is ${aiPlayer.id}.
-    ${baseRules}
-
-    *** DECISION STRATEGY: CHAOTIC AGGRESSOR ***
-    1. CALCULATED AGGRESSION: Use TAX, STEAL, and ASSASSINATE when advantageous. Bluff to create chaos, but don't blindly throw away cards.
-    2. PRUDENT CHALLENGES:
-       - AVOID challenging every single action. Challenging incorrectly loses you a card, which is fatal.
-       - Only challenge if it's statistically obvious they are lying or if you have nothing left to lose.
-       - If an opponent attacks you, consider Blocking. Only Challenge their attack if you know they don't have the card. Passing is sometimes the smartest move to survive.
-    3. WINNING: If you have 3+ coins, consider ASSASSINATE. If 7+, COUP. Survive at all costs.
-
-    *** OUTPUT FORMAT ***
-    Think deeply about the psychological state of the game. Write a thorough 1-2 sentence analysis inside the "thoughtProcess" JSON field.
-    Return ONLY a valid JSON object. Do not include markdown formatting like \`\`\`json.
-    ${jsonFormat}
-      `;
-  }
-
+export const getAIDecision = async (gameState: GameState, aiPlayer: Player, signal?: AbortSignal): Promise<AIDecision> => {
+  const request = createAIDecisionRequest(gameState, aiPlayer);
   try {
-    const startTime = Date.now();
-
     const response = await fetch(API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        playerSlot: getPlayerSlot(aiPlayer.id),
-        systemInstruction,
-        userMessage: `Game State: ${JSON.stringify(publicState)}. Legal opposing target IDs: ${gameState.players.filter(player => player.id !== aiPlayer.id && !player.isEliminated).map(player => player.id).join(', ')}. Never target yourself or an eliminated player. Make your move now.`
-      }),
-      signal,
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerSlot: getPlayerSlot(aiPlayer.id), ...request }), signal,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API Error: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-
-    const data = await response.json();
-    const content = data.content;
-
-    if (!content) throw new Error("Empty response from Proxy");
-
-    // Remove DeepSeek <think> blocks if present
-    const cleanContent = content.replace(/<think>[\s\S]*?<\/think>/ig, '').trim();
-
-    let parsed: any;
-    const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      parsed = JSON.parse(jsonMatch[0]);
-    } else {
-      parsed = JSON.parse(cleanContent);
-    }
-
-    console.log(`[AI Response - ${aiPlayer.name}]:`, parsed);
-
-    // Enforce 10-15s thinking time for optimal immersion and deep thought perception
-    const elapsed = Date.now() - startTime;
-    const targetThinkTime = Math.floor(Math.random() * 5000) + 10000; // Random between 10s and 15s
-    if (elapsed < targetThinkTime) {
-      await new Promise(resolve => setTimeout(resolve, targetThinkTime - elapsed));
-    }
-
-    // Normalize into AIDecision (since we flattened the prompt)
+    if (!response.ok) throw new Error(`API Error: ${response.status} - ${await response.text()}`);
+    const content = (await response.json()).content as string;
+    if (!content) throw new Error('Empty response from Proxy');
+    const clean = content.replace(/<think>[\s\S]*?<\/think>/ig, '').trim();
+    const parsed = JSON.parse(clean.match(/\{[\s\S]*\}/)?.[0] || clean);
     return {
       type: parsed.type,
       payload: {
         action: parsed.action || parsed.payload?.action,
         targetId: parsed.targetId || parsed.payload?.targetId,
         cardToLose: parsed.cardToLose || parsed.payload?.cardToLose,
-        blockCard: parsed.blockCard || parsed.payload?.blockCard
+        blockCard: parsed.blockCard || parsed.payload?.blockCard,
       },
-      thoughtProcess: parsed.thoughtProcess
+      thoughtProcess: parsed.thoughtProcess,
     } as AIDecision;
-
   } catch (error: any) {
     if (error?.name === 'AbortError') throw error;
-    console.error("AI Error:", error);
-    alert(`[SYSTEM ALERT] AI (${aiPlayer.name}) crashed during thought process!\n\nReason: ${error.message}\n\nThis usually happens if your API Key in Cloudflare Secrets is missing/invalid, or the Model name is wrong. The AI will now skip its turn to prevent crashing the game.`);
-    // Fallback safe move to prevent game freeze
-    return { type: 'PASS', thoughtProcess: "Connection error, passing turn." };
+    console.error('AI Error:', error);
+    return { type: 'PASS', thoughtProcess: 'Connection error, passing turn.' };
   }
 };

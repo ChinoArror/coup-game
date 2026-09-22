@@ -1,5 +1,6 @@
 import { AIChannelError, callAIChannel } from './services/aiGateway';
-import { validateRoomDraft } from './services/rooms';
+import { isRoomAiChannel, roomAiName, validateRoomDraft } from './services/rooms';
+import { initializeGameForSeats } from './utils/gameEngine';
 export { RoomGame } from './roomGame';
 
 const SSO_URL = 'https://accounts.aryuki.com';
@@ -127,6 +128,9 @@ export default {
     const ensureRooms = async () => {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, owner_uuid TEXT NOT NULL, owner_is_admin INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, seat_count INTEGER NOT NULL, ai_channels_json TEXT NOT NULL, time_controls_json TEXT NOT NULL, durable_object_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER)').run();
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS room_members (room_id TEXT NOT NULL, user_uuid TEXT NOT NULL, display_name TEXT NOT NULL, seat_index INTEGER NOT NULL, is_ready INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL, left_at INTEGER, PRIMARY KEY(room_id,user_uuid))').run();
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS room_invites (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_by_uuid TEXT NOT NULL, expires_at INTEGER NOT NULL, max_uses INTEGER NOT NULL DEFAULT 1, use_count INTEGER NOT NULL DEFAULT 0, revoked_at INTEGER)').run();
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS room_snapshots (room_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, state_json TEXT NOT NULL, clocks_json TEXT NOT NULL, saved_at INTEGER NOT NULL)').run();
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS room_events (room_id TEXT NOT NULL, revision INTEGER NOT NULL, actor_key TEXT NOT NULL, client_action_id TEXT NOT NULL, event_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(room_id, actor_key, client_action_id))').run();
     };
 
     const checkQuota = async (user: NonNullable<typeof session>) => {
@@ -156,14 +160,150 @@ export default {
     };
 
     try {
+      const roomIdFromPath = (suffix = '') => url.pathname.startsWith('/api/rooms/') ? decodeURIComponent(url.pathname.slice('/api/rooms/'.length, suffix ? -suffix.length : undefined)) : null;
+      const hashInvite = async (token: string) => {
+        const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      };
+      const newInviteToken = () => {
+        const bytes = crypto.getRandomValues(new Uint8Array(24));
+        return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      };
+      const normalizeTimeControls = (value: any) => {
+        const normalize = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 10_000 && candidate <= 86_400_000 ? Math.floor(candidate) : undefined;
+        return { stepLimitMs: normalize(value?.stepLimitMs), totalLimitMs: normalize(value?.totalLimitMs) };
+      };
+      const getRoom = async (id: string) => await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(id).first() as any;
+      const getMember = async (id: string, userId: string) => await env.DB.prepare('SELECT * FROM room_members WHERE room_id = ? AND user_uuid = ? AND left_at IS NULL').bind(id, userId).first() as any;
+      const activeMembers = async (id: string) => (await env.DB.prepare('SELECT * FROM room_members WHERE room_id = ? AND left_at IS NULL ORDER BY seat_index').bind(id).all() as any).results as any[];
+      const requireRoomMember = async (id: string, user: NonNullable<typeof session>) => {
+        const room = await getRoom(id); if (!room) throw new HttpError(404, 'Room not found');
+        const member = await getMember(id, user.uuid); if (!member) throw new HttpError(403, 'Room membership required');
+        return { room, member };
+      };
+      const requireRoomOwner = async (id: string, user: NonNullable<typeof session>) => {
+        const { room } = await requireRoomMember(id, user);
+        if (room.owner_uuid !== user.uuid) throw new HttpError(403, 'Only the room owner can do that');
+        return room;
+      };
+      const createInvite = async (roomId: string, creatorUuid: string) => {
+        const token = newInviteToken(); const now = Date.now();
+        await env.DB.prepare('INSERT INTO room_invites (id, room_id, token_hash, created_by_uuid, expires_at, max_uses, use_count) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .bind(crypto.randomUUID(), roomId, await hashInvite(token), creatorUuid, now + 86_400_000, 1, 0).run();
+        return { token, expiresAt: now + 86_400_000 };
+      };
+
       if (url.pathname === '/api/rooms' && request.method === 'POST') {
         const user = requireSession(); const body = await request.json() as any;
         const draft = validateRoomDraft({ seatCount: body?.seatCount, aiChannels: body?.aiChannels || [] });
         if (!draft.valid) throw new HttpError(400, 'error' in draft ? draft.error : 'Invalid room');
-        await ensureRooms(); const id = crypto.randomUUID(); const now = Date.now();
-        await env.DB.prepare('INSERT INTO rooms (id,owner_uuid,owner_is_admin,status,seat_count,ai_channels_json,time_controls_json,durable_object_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id,user.uuid,user.role === 'admin' ? 1 : 0,'open',body.seatCount,JSON.stringify(body.aiChannels),JSON.stringify(body.timeControls || {}),id,now,now).run();
-        await env.DB.prepare('INSERT INTO room_members (room_id,user_uuid,display_name,seat_index,is_ready,joined_at) VALUES (?,?,?,?,?,?)').bind(id,user.uuid,user.name,0,0,now).run();
-        return json({ id, status: 'open' }, 201);
+        const aiChannels = body.aiChannels.filter(isRoomAiChannel) as ChannelId[];
+        const timeControls = normalizeTimeControls(body.timeControls);
+        await ensureRooms();
+        // Health checks are real, server-side calls and deliberately happen before any D1 write.
+        for (const channelId of aiChannels) await callWithQuota(user, channelId, 'You are a service health check. Reply with one valid JSON object only.', '{"status":"ok"}');
+        const id = crypto.randomUUID(); const now = Date.now();
+        await env.DB.prepare('INSERT INTO rooms (id,owner_uuid,owner_is_admin,status,seat_count,ai_channels_json,time_controls_json,durable_object_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id, user.uuid, user.role === 'admin' ? 1 : 0, 'open', body.seatCount, JSON.stringify(aiChannels), JSON.stringify(timeControls), id, now, now).run();
+        await env.DB.prepare('INSERT INTO room_members (room_id,user_uuid,display_name,seat_index,is_ready,joined_at) VALUES (?,?,?,?,?,?)').bind(id, user.uuid, user.name, 0, 0, now).run();
+        const invite = await createInvite(id, user.uuid);
+        return json({ id, status: 'open', invite: { url: `${url.origin}/game?invite=${invite.token}`, expiresAt: invite.expiresAt } }, 201);
+      }
+
+      if (url.pathname === '/api/rooms' && request.method === 'GET') {
+        const user = requireSession(); await ensureRooms();
+        const { results } = await env.DB.prepare('SELECT r.*, m.is_ready FROM rooms r JOIN room_members m ON m.room_id = r.id WHERE m.user_uuid = ? AND m.left_at IS NULL ORDER BY r.updated_at DESC').bind(user.uuid).all() as any;
+        return json(await Promise.all(results.map(async (room: any) => ({
+          id: room.id,
+          status: room.status,
+          seatCount: room.seat_count,
+          aiChannels: JSON.parse(room.ai_channels_json),
+          timeControls: JSON.parse(room.time_controls_json),
+          isReady: Boolean(room.is_ready),
+          memberCount: (await activeMembers(room.id)).length,
+        }))));
+      }
+
+      if (url.pathname.startsWith('/api/rooms/invite/') && request.method === 'GET') {
+        const user = requireSession(); await ensureRooms(); const token = decodeURIComponent(url.pathname.slice('/api/rooms/invite/'.length));
+        const invite = await env.DB.prepare('SELECT * FROM room_invites WHERE token_hash = ? AND revoked_at IS NULL').bind(await hashInvite(token)).first() as any;
+        if (!invite || invite.expires_at <= Date.now() || invite.use_count >= invite.max_uses) throw new HttpError(404, 'Invitation is unavailable');
+        const room = await getRoom(invite.room_id); if (!room || room.status !== 'open') throw new HttpError(409, 'Room is not accepting members');
+        return json({ room: { id: room.id, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: !(await getMember(room.id, user.uuid)) });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/join') && request.method === 'POST') {
+        const user = requireSession(); await ensureRooms(); const id = roomIdFromPath('/join'); if (!id) throw new HttpError(404, 'Room not found');
+        const room = await getRoom(id); if (!room) throw new HttpError(404, 'Room not found'); if (room.status !== 'open') throw new HttpError(409, 'Room is not accepting members');
+        if (await getMember(id, user.uuid)) return json({ id, joined: true });
+        const body = await request.json() as any; if (typeof body?.inviteToken !== 'string') throw new HttpError(400, 'An invitation is required');
+        const invite = await env.DB.prepare('SELECT * FROM room_invites WHERE room_id = ? AND token_hash = ? AND revoked_at IS NULL').bind(id, await hashInvite(body.inviteToken)).first() as any;
+        if (!invite || invite.expires_at <= Date.now() || invite.use_count >= invite.max_uses) throw new HttpError(403, 'Invitation is unavailable');
+        const members = await activeMembers(id); const aiCount = JSON.parse(room.ai_channels_json).length;
+        if (members.length + aiCount >= room.seat_count) throw new HttpError(409, 'Room is full');
+        const now = Date.now();
+        await env.DB.prepare('INSERT INTO room_members (room_id,user_uuid,display_name,seat_index,is_ready,joined_at) VALUES (?,?,?,?,?,?)').bind(id, user.uuid, user.name, members.length, 0, now).run();
+        await env.DB.prepare('UPDATE room_invites SET use_count = use_count + 1 WHERE id = ?').bind(invite.id).run();
+        await env.DB.prepare('UPDATE rooms SET updated_at = ? WHERE id = ?').bind(now, id).run();
+        return json({ id, joined: true });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/ready') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/ready'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
+        if (room.status !== 'open') throw new HttpError(409, 'Room has already started'); const body = await request.json() as any;
+        await env.DB.prepare('UPDATE room_members SET is_ready = ? WHERE room_id = ? AND user_uuid = ? AND left_at IS NULL').bind(body?.ready === false ? 0 : 1, id, user.uuid).run();
+        return json({ ready: body?.ready !== false });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/invite') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/invite'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user);
+        if (room.status !== 'open') throw new HttpError(409, 'Room is not accepting members'); const invite = await createInvite(id, user.uuid);
+        return json({ url: `${url.origin}/game?invite=${invite.token}`, expiresAt: invite.expiresAt }, 201);
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/start') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/start'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user);
+        if (room.status !== 'open') throw new HttpError(409, 'Room has already started'); const members = await activeMembers(id); const channels = JSON.parse(room.ai_channels_json) as string[];
+        if (members.length + channels.length !== room.seat_count) throw new HttpError(409, 'Room seats are not full');
+        if (members.some(member => !member.is_ready)) throw new HttpError(409, 'Every human member must be ready');
+        if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
+        const game = initializeGameForSeats([...members.map(member => ({ id: member.user_uuid, name: member.display_name, isAI: false })), ...channels.map(channel => ({ id: `room-ai-${channel}`, name: roomAiName(channel as any), isAI: true }))]);
+        game.roomId = id;
+        const controls = JSON.parse(room.time_controls_json); const remaining = Object.fromEntries(members.map(member => [member.user_uuid, controls.totalLimitMs || 0]));
+        const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+        const initialized = await stub.fetch(new Request('https://room.internal/initialize', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Room-Internal': '1', 'X-Room-Actor': user.uuid }, body: JSON.stringify({ type: 'initialize', room: { roomId: id, owner: { uuid: room.owner_uuid, isAdmin: Boolean(room.owner_is_admin) }, aiChannels: channels, state: game, config: controls, remaining } }) }));
+        if (!initialized.ok) throw new HttpError(502, 'Room initialization failed');
+        await env.DB.prepare('UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?').bind('started', Date.now(), id).run();
+        return json({ id, status: 'started' });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/close') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/close'); if (!id) throw new HttpError(404, 'Room not found'); await requireRoomOwner(id, user);
+        await env.DB.prepare('UPDATE rooms SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').bind('closed', Date.now(), Date.now(), id).run(); return json({ status: 'closed' });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/leave') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/leave'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
+        if (room.status !== 'open') throw new HttpError(409, 'Players cannot leave a started room'); if (room.owner_uuid === user.uuid) throw new HttpError(409, 'The owner must close the room instead');
+        await env.DB.prepare('UPDATE room_members SET left_at = ?, is_ready = 0 WHERE room_id = ? AND user_uuid = ?').bind(Date.now(), id, user.uuid).run(); return json({ left: true });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/kick') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/kick'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user); const body = await request.json() as any;
+        if (room.status !== 'open') throw new HttpError(409, 'Players cannot be removed after start'); if (!body?.userUuid || body.userUuid === user.uuid) throw new HttpError(400, 'Invalid member');
+        const result = await env.DB.prepare('UPDATE room_members SET left_at = ?, is_ready = 0 WHERE room_id = ? AND user_uuid = ? AND left_at IS NULL').bind(Date.now(), id, body.userUuid).run() as any;
+        if (!result.meta?.changes) throw new HttpError(404, 'Member not found'); return json({ removed: true });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/socket') && request.method === 'GET') {
+        const user = requireSession(); const id = roomIdFromPath('/socket'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
+        if (room.status !== 'started') throw new HttpError(409, 'Room has not started'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
+        const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+        return stub.fetch(new Request('https://room.internal/socket', { headers: { Upgrade: 'websocket', 'X-Room-Actor': user.uuid } }));
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && request.method === 'GET') {
+        const user = requireSession(); await ensureRooms(); const id = roomIdFromPath(); if (!id || id.includes('/')) throw new HttpError(404, 'Room not found'); const { room, member } = await requireRoomMember(id, user); const members = await activeMembers(id);
+        return json({ id: room.id, ownerUuid: room.owner_uuid, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json), aiNames: (JSON.parse(room.ai_channels_json) as string[]).map(channel => roomAiName(channel as any)), timeControls: JSON.parse(room.time_controls_json), me: { ready: Boolean(member.is_ready) }, members: members.map(item => ({ uuid: item.user_uuid, name: item.display_name, seatIndex: item.seat_index, ready: Boolean(item.is_ready) })) });
       }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
         return json({ success: true }, 200, { 'Set-Cookie': 'coup_session=; Path=/; Domain=.aryuki.com; Max-Age=0;' });

@@ -4,7 +4,7 @@ import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handl
 import { getAIDecision } from './services/geminiService';
 import { canAccessAdminDash } from './services/adminAccess';
 import { createAIRequestContext, isAIRequestCurrent } from './services/aiDecisionGuard';
-import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut, History as HistoryIcon } from 'lucide-react';
+import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut, History as HistoryIcon, Users } from 'lucide-react';
 
 export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard' | 'history') => void, onLogout: () => void }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -244,6 +244,9 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           <h1 className="text-lg font-bold tracking-wider text-amber-500 font-mono">COUP: SHADOW PROTOCOL</h1>
         </div>
         <div className="flex gap-2 items-center">
+          <a href="/game" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-300 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Multiplayer rooms">
+            <Users size={18} /> ROOMS
+          </a>
           {canAccessAdminDash(role) && (
             <button onClick={() => onNavigate('admin')} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 font-mono text-xs font-bold tracking-wider text-amber-500 transition-colors hover:bg-slate-800" title="AdminDash">
               <LayoutDashboard size={18} />

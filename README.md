@@ -63,6 +63,25 @@ You can claim to have a defensive character to block an action targeted at you (
 * **Global Leaderboard**: The system records the placement and survival duration of every user across the site in real-time.
 * **Private Match History**: Completed matches retain their event timeline, history-only coin changes, and the Alapha/Beta AI channels used; each saved record can be deleted by its owner.
 * **Admin Dashboard**: Real-time management and ban-controls for operant access codes.
+* **Authenticated multiplayer rooms**: `/game` hosts separate 3–6 player rooms without changing the original `You + Alapha + Beta` game at `/`. Room AI seats are `I`, `II`, and `III`, each mapped once to existing channels `1`, `2`, and `3`.
+
+### Multiplayer rooms
+
+- Every participant authenticates through Auth Center. Only room members can inspect a lobby, connect its WebSocket, or submit a game action.
+- The owner selects up to three distinct AI channels and optional *per-human* step and total clocks. The Worker runs a minimal health check for each selected AI before the room exists; that usage, and all later room-AI usage, is attributed to the owner. Admin owners remain unlimited.
+- Invitations are opaque one-use, 24-hour links. D1 stores only a SHA-256 digest, never the plaintext token.
+- All human members must be Ready, and all configured seats must be occupied, before the owner can start. The room Durable Object is the sole state writer and sends each socket a viewer-specific projection: other players' unrevealed cards and the court deck are never sent to the browser.
+- Clocks continue through refreshes and reconnects. On expiry, the server passes a response, takes Income for a normal turn, Coupes the first live opponent when forced at 10+ coins, or reveals the first available influence when a loss must be chosen.
+
+Run the relevant checks locally with:
+
+```bash
+npx vitest run
+npx tsc --noEmit
+npm run build
+```
+
+`wrangler.toml` contains the required `ROOM_GAME` Durable Object binding and migration. Apply the D1 schema before deploying a new environment.
 
 --- 
 
