@@ -1,4 +1,6 @@
 import { AIChannelError, callAIChannel } from './services/aiGateway';
+import { validateRoomDraft } from './services/rooms';
+export { RoomGame } from './roomGame';
 
 const SSO_URL = 'https://accounts.aryuki.com';
 const PLAYER_SLOTS = ['alapha', 'beta'] as const;
@@ -122,6 +124,10 @@ export default {
       await env.DB.prepare('CREATE TABLE IF NOT EXISTS game_history (id TEXT PRIMARY KEY, user_uuid TEXT NOT NULL, game_id TEXT NOT NULL UNIQUE, completed_at INTEGER NOT NULL, winner TEXT, ai_channels_json TEXT NOT NULL, state_json TEXT NOT NULL)').run();
       await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_game_history_user_completed ON game_history(user_uuid, completed_at DESC)').run();
     };
+    const ensureRooms = async () => {
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS rooms (id TEXT PRIMARY KEY, owner_uuid TEXT NOT NULL, owner_is_admin INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, seat_count INTEGER NOT NULL, ai_channels_json TEXT NOT NULL, time_controls_json TEXT NOT NULL, durable_object_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER)').run();
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS room_members (room_id TEXT NOT NULL, user_uuid TEXT NOT NULL, display_name TEXT NOT NULL, seat_index INTEGER NOT NULL, is_ready INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL, left_at INTEGER, PRIMARY KEY(room_id,user_uuid))').run();
+    };
 
     const checkQuota = async (user: NonNullable<typeof session>) => {
       const response = await fetch(`${SSO_URL}/api/quota/check?uuid=${encodeURIComponent(user.uuid)}&app_id=${encodeURIComponent(appId)}`, {
@@ -150,6 +156,15 @@ export default {
     };
 
     try {
+      if (url.pathname === '/api/rooms' && request.method === 'POST') {
+        const user = requireSession(); const body = await request.json() as any;
+        const draft = validateRoomDraft({ seatCount: body?.seatCount, aiChannels: body?.aiChannels || [] });
+        if (!draft.valid) throw new HttpError(400, 'error' in draft ? draft.error : 'Invalid room');
+        await ensureRooms(); const id = crypto.randomUUID(); const now = Date.now();
+        await env.DB.prepare('INSERT INTO rooms (id,owner_uuid,owner_is_admin,status,seat_count,ai_channels_json,time_controls_json,durable_object_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(id,user.uuid,user.role === 'admin' ? 1 : 0,'open',body.seatCount,JSON.stringify(body.aiChannels),JSON.stringify(body.timeControls || {}),id,now,now).run();
+        await env.DB.prepare('INSERT INTO room_members (room_id,user_uuid,display_name,seat_index,is_ready,joined_at) VALUES (?,?,?,?,?,?)').bind(id,user.uuid,user.name,0,0,now).run();
+        return json({ id, status: 'open' }, 201);
+      }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
         return json({ success: true }, 200, { 'Set-Cookie': 'coup_session=; Path=/; Domain=.aryuki.com; Max-Age=0;' });
       }

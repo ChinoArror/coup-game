@@ -6,6 +6,7 @@ import AdminPanel from './AdminPanel';
 import Leaderboard from './Leaderboard';
 import History from './History';
 import Rules from './Rules';
+import GameHub from './GameHub';
 import { cleanSsoCallbackPath } from './services/sso';
 
 const RootComponent = () => {
@@ -60,6 +61,7 @@ const RootComponent = () => {
   }
 
   if (window.location.pathname === '/game/rules') return <Rules onBack={() => { window.location.href = '/game'; }} />;
+  if (window.location.pathname === '/game') return <GameHub />;
 
   if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;

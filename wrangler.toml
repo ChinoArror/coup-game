@@ -21,3 +21,11 @@ Model_3 = "gpt-5.6-luna"
 binding = "DB"
 database_name = "coup-game-db"
 database_id = "53591d43-2dfd-4308-ae04-d8e1999e6ca3"
+
+[[durable_objects.bindings]]
+name = "ROOM_GAME"
+class_name = "RoomGame"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RoomGame"]

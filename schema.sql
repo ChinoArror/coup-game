@@ -22,6 +22,40 @@ CREATE TABLE process (
   updated_at INTEGER
 );
 
+CREATE TABLE rooms (
+  id TEXT PRIMARY KEY,
+  owner_uuid TEXT NOT NULL,
+  owner_is_admin INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  seat_count INTEGER NOT NULL,
+  ai_channels_json TEXT NOT NULL,
+  time_controls_json TEXT NOT NULL,
+  durable_object_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+CREATE TABLE room_members (
+  room_id TEXT NOT NULL,
+  user_uuid TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  seat_index INTEGER NOT NULL,
+  is_ready INTEGER NOT NULL DEFAULT 0,
+  joined_at INTEGER NOT NULL,
+  left_at INTEGER,
+  PRIMARY KEY (room_id, user_uuid)
+);
+CREATE TABLE room_invites (
+  id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by_uuid TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  use_count INTEGER NOT NULL DEFAULT 0,
+  revoked_at INTEGER
+);
+
 -- Private completed-match snapshots. The Worker also creates this table lazily
 -- so existing deployed D1 databases receive the feature without a reset.
 CREATE TABLE game_history (
