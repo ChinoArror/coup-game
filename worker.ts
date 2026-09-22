@@ -3,6 +3,7 @@ import { AIChannelError, callAIChannel } from './services/aiGateway';
 const SSO_URL = 'https://accounts.aryuki.com';
 const PLAYER_SLOTS = ['alapha', 'beta'] as const;
 const CHANNEL_IDS = ['1', '2', '3'] as const;
+const processSchemaMigrations = new WeakMap<object, Promise<void>>();
 
 type PlayerSlot = typeof PLAYER_SLOTS[number];
 type ChannelId = typeof CHANNEL_IDS[number];
@@ -44,6 +45,18 @@ function validSlot(value: unknown): value is PlayerSlot {
 
 function validChannel(value: unknown): value is ChannelId {
   return typeof value === 'string' && (CHANNEL_IDS as readonly string[]).includes(value);
+}
+
+function ensureProcessSchema(db: any) {
+  const existing = processSchemaMigrations.get(db);
+  if (existing) return existing;
+  const migration = (async () => {
+    await db.prepare('CREATE TABLE IF NOT EXISTS process (user_uuid TEXT PRIMARY KEY, game_id TEXT NOT NULL, state_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER)').run();
+    try { await db.prepare('ALTER TABLE process ADD COLUMN revision INTEGER NOT NULL DEFAULT 0').run(); } catch { /* Existing installations may already have this column. */ }
+    try { await db.prepare('ALTER TABLE process ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0').run(); } catch { /* Existing installations may already have this column. */ }
+  })();
+  processSchemaMigrations.set(db, migration);
+  return migration;
 }
 
 export default {
@@ -243,15 +256,21 @@ export default {
 
       if (url.pathname === '/api/process') {
         const user = requireSession();
+        await ensureProcessSchema(env.DB);
         if (request.method === 'GET') {
           const proc = await env.DB.prepare('SELECT * FROM process WHERE user_uuid = ?').bind(user.uuid).first() as any;
           return json({ state: proc ? JSON.parse(proc.state_json) : null });
         }
         if (request.method === 'POST') {
           const body = await request.json() as any;
-          await env.DB.prepare('INSERT INTO process (user_uuid, game_id, state_json, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_uuid) DO UPDATE SET game_id=excluded.game_id, state_json=excluded.state_json, updated_at=excluded.updated_at')
-            .bind(user.uuid, body.game_id, JSON.stringify(body.state), Date.now()).run();
-          return json({ success: true });
+          const state = body?.state;
+          const gameId = typeof body?.game_id === 'string' ? body.game_id : state?.gameId;
+          if (!state || typeof state !== 'object' || typeof gameId !== 'string' || !gameId) throw new HttpError(400, 'Invalid game state');
+          const revision = Number.isInteger(state.revision) && state.revision >= 0 ? state.revision : 0;
+          const startedAt = Number.isFinite(state.startedAt) && state.startedAt >= 0 ? state.startedAt : 0;
+          const result = await env.DB.prepare('INSERT INTO process (user_uuid, game_id, state_json, revision, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_uuid) DO UPDATE SET game_id=excluded.game_id, state_json=excluded.state_json, revision=excluded.revision, started_at=excluded.started_at, updated_at=excluded.updated_at WHERE excluded.started_at > process.started_at OR (excluded.game_id = process.game_id AND excluded.revision >= process.revision)')
+            .bind(user.uuid, gameId, JSON.stringify(state), revision, startedAt, Date.now()).run() as any;
+          return json({ success: true, ignored: !result.meta?.changes });
         }
         if (request.method === 'DELETE') {
           await env.DB.prepare('DELETE FROM process WHERE user_uuid = ?').bind(user.uuid).run();

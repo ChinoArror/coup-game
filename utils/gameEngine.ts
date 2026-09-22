@@ -208,7 +208,7 @@ export const handleChallenge = (state: GameState, challengerId: string): GameSta
     log(next, challenger.name + " challenges " + actor.name + "'s " + action.action + "!");
     const cardIndex = actor.cards.findIndex(card => !card.isRevealed && card.type === required);
     if (cardIndex >= 0) {
-      log(next, actor.name + " reveals " + required + "! Challenge FAILED.");
+      log(next, actor.name + " reveals " + required + "! Challenge FAILED. " + required + " returns to the Court deck and a replacement is drawn.");
       next.phase = GamePhase.CHALLENGE_LOSS;
       next.playerToLoseInfluence = challengerId;
       next.waitingForResponseFrom = [challengerId];
@@ -231,7 +231,7 @@ export const handleChallenge = (state: GameState, challengerId: string): GameSta
     log(next, challenger.name + " challenges " + blocker.name + "'s block with " + claim + "!");
     const cardIndex = blocker.cards.findIndex(card => !card.isRevealed && card.type === claim);
     if (cardIndex >= 0) {
-      log(next, blocker.name + " reveals " + claim + "! Challenge FAILED.");
+      log(next, blocker.name + " reveals " + claim + "! Challenge FAILED. " + claim + " returns to the Court deck and a replacement is drawn.");
       next.phase = GamePhase.CHALLENGE_LOSS;
       next.playerToLoseInfluence = challengerId;
       next.waitingForResponseFrom = [challengerId];

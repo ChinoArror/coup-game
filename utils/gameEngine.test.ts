@@ -75,4 +75,20 @@ describe('game transition validation', () => {
 
     expect(settled.logs.at(-1)?.coins).toEqual({ human: 1, ai1: 4, ai2: 2 });
   });
+
+  it('explains that a proven character is replaced after a failed challenge', () => {
+    const state = gameState({
+      currentPlayerIndex: 0,
+      players: gameState().players.map(player => player.id === 'human'
+        ? { ...player, cards: [{ id: 'human-duke', type: CardType.DUKE, isRevealed: false }] }
+        : player),
+      deck: [CardType.CAPTAIN],
+    });
+
+    const challenged = handleChallenge(handlePlayerAction(state, 'human', ActionType.TAX), 'ai1');
+
+    expect(challenged.players.find(player => player.id === 'human')?.cards[0]).toMatchObject({ isRevealed: false });
+    expect(challenged.players.find(player => player.id === 'human')?.cards[0].id).not.toBe('human-duke');
+    expect(challenged.logs.at(-1)?.text).toBe('You reveals Duke! Challenge FAILED. Duke returns to the Court deck and a replacement is drawn.');
+  });
 });

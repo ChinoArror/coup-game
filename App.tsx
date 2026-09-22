@@ -37,6 +37,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   // Persist State to DB
   useEffect(() => {
     if (!gameState || loading) return;
+    const controller = new AbortController();
 
     // Check if game over to submit leaderboard
     if (gameState.phase === GamePhase.GAME_OVER && !submittedRef.current) {
@@ -63,10 +64,13 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
     }
 
     const timer = setTimeout(() => {
-      fetch('/api/process', {
+      void fetch('/api/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: gameState, game_id: gameState.gameId })
+        body: JSON.stringify({ state: gameState, game_id: gameState.gameId }),
+        signal: controller.signal,
+      }).catch(error => {
+        if (error?.name !== 'AbortError') console.error('Game state sync failed', error);
       });
     }, 1000);
 
@@ -79,6 +83,7 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
 
     return () => {
       clearTimeout(timer);
+      controller.abort();
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [gameState, loading]);

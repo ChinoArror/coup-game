@@ -17,6 +17,8 @@ CREATE TABLE process (
   user_uuid TEXT PRIMARY KEY,
   game_id TEXT NOT NULL,
   state_json TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER
 );
 

@@ -11,10 +11,18 @@ type HistoryRecord = {
   ai_channels_json: string;
   state_json: string;
 };
+type ProcessRecord = {
+  user_uuid: string;
+  game_id: string;
+  state_json: string;
+  revision: number;
+  started_at: number;
+};
 
 class FakeDatabase {
   readonly config: ConfigState = {};
   readonly history = new Map<string, HistoryRecord>();
+  readonly process = new Map<string, ProcessRecord>();
 
   prepare(sql: string) {
     let values: unknown[] = [];
@@ -39,6 +47,7 @@ class FakeDatabase {
 
   private async first(sql: string, values: unknown[]) {
     if (sql.includes('SELECT * FROM users')) return null;
+    if (sql.includes('SELECT * FROM process WHERE user_uuid = ?')) return this.process.get(String(values[0])) || null;
     if (sql.includes('SELECT channel_id FROM ai_player_config')) {
       const slot = String(values[0]);
       return this.config[slot] ? { channel_id: this.config[slot] } : null;
@@ -83,6 +92,24 @@ class FakeDatabase {
       }
       return { success: true, meta: { changes: 0 } };
     }
+    if (sql.includes('INSERT INTO process')) {
+      const [user_uuid, game_id, state_json, revisionValue, startedAtValue] = values as [string, string, string, number | undefined, number | undefined];
+      const state = JSON.parse(state_json) as { revision?: number; startedAt?: number };
+      const candidate: ProcessRecord = {
+        user_uuid,
+        game_id,
+        state_json,
+        revision: Number(revisionValue ?? state.revision ?? 0),
+        started_at: Number(startedAtValue ?? state.startedAt ?? 0),
+      };
+      const current = this.process.get(user_uuid);
+      const guarded = sql.includes('excluded.started_at > process.started_at');
+      const accepted = !current || !guarded
+        || candidate.started_at > current.started_at
+        || (candidate.game_id === current.game_id && candidate.revision >= current.revision);
+      if (accepted) this.process.set(user_uuid, candidate);
+      return { success: true, meta: { changes: accepted ? 1 : 0 } };
+    }
     return { success: true };
   }
 }
@@ -125,6 +152,10 @@ function finishedState(gameId = 'finished-game') {
     players: [{ id: 'human', name: 'You', coins: 7 }],
     logs: [{ id: 'start', text: 'Game Started. Good luck.', timestamp: 1 }],
   };
+}
+
+function processState(gameId: string, revision: number, startedAt: number) {
+  return { gameId, revision, startedAt, phase: 'TURN_START', players: [], logs: [] };
 }
 
 function installFetchMock(providerStatus = 200) {
@@ -280,5 +311,27 @@ describe('private match history', () => {
 
     expect((await worker.fetch(request(`/api/history/${item.id}`, 'user', { method: 'DELETE' }), env, ctx)).status).toBe(200);
     expect((await worker.fetch(request(`/api/history/${item.id}`, 'user'), env, ctx)).status).toBe(404);
+  });
+});
+
+describe('game process synchronization', () => {
+  it('does not allow an older state revision or an earlier game to overwrite progress', async () => {
+    const { env } = createEnvironment();
+    installFetchMock();
+    const ctx = { waitUntil() {} } as any;
+    const save = (state: ReturnType<typeof processState>) => worker.fetch(request('/api/process', 'user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state, game_id: state.gameId }),
+    }), env, ctx);
+
+    await save(processState('game-a', 5, 100));
+    await save(processState('game-a', 4, 100));
+    expect((await (await worker.fetch(request('/api/process', 'user'), env, ctx)).json() as any).state.revision).toBe(5);
+
+    await save(processState('game-b', 0, 200));
+    await save(processState('game-a', 6, 100));
+    const restored = await (await worker.fetch(request('/api/process', 'user'), env, ctx)).json() as any;
+    expect(restored.state).toMatchObject({ gameId: 'game-b', revision: 0, startedAt: 200 });
   });
 });
