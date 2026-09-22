@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ActionType, CardType, GamePhase, type GameState } from '../types';
-import { handleChallenge, handlePass, handlePlayerAction, resolveActionSuccess } from './gameEngine';
+import { handleChallenge, handlePass, handlePlayerAction, initializeGameForSeats, resolveActionSuccess } from './gameEngine';
 
 function gameState(overrides: Partial<GameState> = {}): GameState {
   return {
@@ -28,6 +28,19 @@ function gameState(overrides: Partial<GameState> = {}): GameState {
 }
 
 describe('game transition validation', () => {
+  it('initializes a room game with between three and six supplied seats', () => {
+    const state = initializeGameForSeats([
+      { id: 'owner', name: 'Owner', isAI: false },
+      { id: 'room-ai-1', name: 'I', isAI: true },
+      { id: 'guest', name: 'Guest', isAI: false },
+      { id: 'room-ai-2', name: 'II', isAI: true },
+    ]);
+
+    expect(state.players.map(player => player.id)).toEqual(['owner', 'room-ai-1', 'guest', 'room-ai-2']);
+    expect(state.players).toHaveLength(4);
+    expect(state.deck).toHaveLength(7);
+  });
+
   it('transfers coins when an AI uppercase STEAL is accepted by every responder', () => {
     const declared = handlePlayerAction(gameState(), 'STEAL' as ActionType, 'human');
     const afterTargetPass = handlePass(declared, 'human');

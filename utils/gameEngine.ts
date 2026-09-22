@@ -1,4 +1,4 @@
-import { GameState, Player, CardType, ActionType, GamePhase, GameLogEntry } from "../types";
+import { GameState, Player, CardType, ActionType, GamePhase, GameLogEntry, type GameSeat } from "../types";
 
 const INITIAL_COINS = 2;
 const generateId = () => Math.random().toString(36).slice(2, 11);
@@ -114,14 +114,15 @@ const resolveActionSuccessInPlace = (state: GameState): void => {
   nextTurnInPlace(state);
 };
 
-export const initializeGame = (): GameState => {
+export const initializeGameForSeats = (seats: GameSeat[]): GameState => {
+  if (seats.length < 3 || seats.length > 6) throw new Error('A game requires between 3 and 6 seats');
   const deck = createDeck();
   const state: GameState = {
     roomId: generateId(),
     turn: 1,
     currentPlayerIndex: 0,
     phase: GamePhase.TURN_START,
-    players: [createPlayer('human', 'You', false, deck), createPlayer('ai1', 'Alapha', true, deck), createPlayer('ai2', 'Beta', true, deck)],
+    players: seats.map(seat => createPlayer(seat.id, seat.name, seat.isAI, deck)),
     deck,
     pendingAction: null,
     pendingBlock: null,
@@ -136,6 +137,12 @@ export const initializeGame = (): GameState => {
   log(state, "Game Started. Good luck.");
   return state;
 };
+
+export const initializeGame = (): GameState => initializeGameForSeats([
+  { id: 'human', name: 'You', isAI: false },
+  { id: 'ai1', name: 'Alapha', isAI: true },
+  { id: 'ai2', name: 'Beta', isAI: true },
+]);
 
 export const nextTurn = (state: GameState): GameState => {
   const next = cloneState(state);

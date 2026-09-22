@@ -63,6 +63,12 @@ export interface Player {
   placement?: number;
 }
 
+export interface GameSeat {
+  id: string;
+  name: string;
+  isAI: boolean;
+}
+
 export interface GameLogEntry {
   id: string;
   text: string;
