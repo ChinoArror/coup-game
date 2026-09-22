@@ -13,7 +13,7 @@ export default function GameHub({ roomId }: { roomId?: string }) {
   const load = async () => { const [list, identity] = await Promise.all([roomApi.list(), fetch('/api/me').then(response => response.json())]); setRooms(list); setMe(identity.uuid); };
   const openRoom = async (id: string) => { setActive(await roomApi.get(id)); history.pushState({}, '', `/game/${encodeURIComponent(id)}`); };
   const backToHub = () => { setActive(null); history.pushState({}, '', '/game'); void load().catch(reason => setError(reason.message)); };
-  const run = async (operation: () => Promise<unknown>) => { setBusy(true); setError(''); try { await operation(); await load(); } catch (reason: any) { setError(reason.message || 'Room request failed'); } finally { setBusy(false); } };
+  const run = async (operation: () => Promise<unknown>) => { const openedRoomId = active?.id; setBusy(true); setError(''); try { await operation(); await load(); if (openedRoomId && window.location.pathname !== '/game') setActive(await roomApi.get(openedRoomId)); } catch (reason: any) { setError(reason.message || 'Room request failed'); } finally { setBusy(false); } };
   useEffect(() => { void load().catch(reason => setError(reason.message)); if (roomId) void openRoom(roomId).catch(reason => setError(reason.message)); }, [roomId]);
   useEffect(() => { if (!inviteToken) return; void roomApi.resolveInvite(inviteToken).catch(reason => setError(reason.message)); }, [inviteToken]);
   useEffect(() => {
