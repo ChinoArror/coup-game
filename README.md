@@ -55,12 +55,13 @@ You can claim to have a defensive character to block an action targeted at you (
 - **Frontend**: React, TypeScript, Vite, TailwindCSS
 - **Backend**: Cloudflare Workers (Edge Computing)
 - **Database**: Cloudflare D1 (Serverless Relational SQL)
-- **AI Models**: Gemini 3.8 Flash (`Model_1=gemini-3.8-flash`), DeepSeek Flash with max thinking (`Model_2=deepseek-flash`), and OpenAI GPT-5.6 Luna with max reasoning (`Model_3=gpt-5.6-luna`).
+- **AI Models**: Gemini 3.8 Flash (`Model_1=gemini-3.8-flash`), DeepSeek Flash with max thinking (`Model_2=deepseek-flash`), and OpenAI GPT-5.6 Luna with high reasoning (`Model_3=gpt-5.6-luna`).
 
 ### 🌟 Key Features
 * **Dual AI Personalities**: Two uniquely prompted LLMs fighting against you and each other simultaneously.
 * **Persistent Sessions**: Powered by CF D1 + `navigator.sendBeacon`. Start playing on your PC, refresh, or switch to your phone, and the match resumes exactly where you left off.
 * **Global Leaderboard**: The system records the placement and survival duration of every user across the site in real-time.
+* **Private Match History**: Completed matches retain their event timeline, history-only coin changes, and the Alapha/Beta AI channels used; each saved record can be deleted by its owner.
 * **Admin Dashboard**: Real-time management and ban-controls for operant access codes.
 
 --- 
