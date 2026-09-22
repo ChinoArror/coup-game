@@ -1,5 +1,6 @@
 export const ROOM_AI_CHANNELS = ['1', '2', '3'] as const;
 export type RoomAiChannel = typeof ROOM_AI_CHANNELS[number];
+const ROOM_AI_NAMES = { '1': 'I', '2': 'II', '3': 'III' } as const;
 
 export type RoomDraft = {
   seatCount: number;
@@ -8,11 +9,7 @@ export type RoomDraft = {
 
 export type RoomDraftValidation = { valid: true } | { valid: false; error: string };
 
-export const roomAiName = (channelId: RoomAiChannel): 'I' | 'II' | 'III' => ({
-  '1': 'I',
-  '2': 'II',
-  '3': 'III',
-}[channelId]);
+export const roomAiName = (channelId: RoomAiChannel): 'I' | 'II' | 'III' => ROOM_AI_NAMES[channelId];
 
 export const isRoomAiChannel = (value: string): value is RoomAiChannel => ROOM_AI_CHANNELS.includes(value as RoomAiChannel);
 

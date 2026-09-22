@@ -5,6 +5,7 @@ import Login from './Login';
 import AdminPanel from './AdminPanel';
 import Leaderboard from './Leaderboard';
 import History from './History';
+import Rules from './Rules';
 import { cleanSsoCallbackPath } from './services/sso';
 
 const RootComponent = () => {
@@ -57,6 +58,8 @@ const RootComponent = () => {
   if (authStatus === 'unauth') {
     return <Login />;
   }
+
+  if (window.location.pathname === '/game/rules') return <Rules onBack={() => { window.location.href = '/game'; }} />;
 
   if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;
