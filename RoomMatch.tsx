@@ -109,13 +109,13 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
           {me.cards.map(card => <button key={card.id} disabled={!mustLose || card.isRevealed} onClick={() => send({ type: 'lose', cardId: card.id })} className={`rounded-lg border px-4 py-5 text-sm ${card.isRevealed ? 'border-slate-800 text-slate-600' : mustLose ? 'border-red-500 bg-red-950/30 text-red-200' : 'border-slate-600 text-slate-100'}`}>{card.isRevealed ? 'LOST' : card.type}</button>)}
         </div>
         {isTurn && <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          {ordinaryActions.map(action => <button key={action} disabled={mustCoup} onClick={() => send({ type: 'action', action })} className="rounded border border-slate-700 bg-slate-800 p-3 text-xs font-bold hover:border-amber-500">{action}</button>)}
-          {targetedActions.map(action => <button key={action} onClick={() => setTargetAction(action)} disabled={(action === ActionType.ASSASSINATE && me.coins < 3) || (action === ActionType.COUP && me.coins < 7)} className="rounded border border-slate-700 bg-slate-800 p-3 text-xs font-bold hover:border-amber-500">{targetAction === action ? 'SELECT TARGET' : action}</button>)}
+          {!mustCoup && ordinaryActions.map(action => <button key={action} onClick={() => send({ type: 'action', action })} className="rounded border border-slate-700 bg-slate-800 p-3 text-xs font-bold hover:border-amber-500">{action}</button>)}
+          {targetedActions.filter(action => action === ActionType.COUP ? me.coins >= 7 : action === ActionType.ASSASSINATE ? me.coins >= 3 && !mustCoup : !mustCoup).map(action => <button key={action} onClick={() => setTargetAction(action)} className="rounded border border-slate-700 bg-slate-800 p-3 text-xs font-bold hover:border-amber-500">{targetAction === action ? 'SELECT TARGET' : action}</button>)}
         </div>}
         {canRespond && <div className="mt-3 flex flex-wrap gap-2">
           <button onClick={() => send({ type: 'pass' })} className="rounded bg-slate-700 px-3 py-2 text-xs font-bold">PASS / ALLOW</button>
-          <button onClick={() => send({ type: 'challenge' })} className="rounded bg-red-900/60 px-3 py-2 text-xs font-bold text-red-100">CHALLENGE</button>
-          {state.phase === GamePhase.ACTION_DECLARED && [CardType.DUKE, CardType.CAPTAIN, CardType.AMBASSADOR, CardType.CONTESSA].map(cardClaim => <button key={cardClaim} onClick={() => send({ type: 'block', cardClaim })} className="rounded bg-slate-800 px-3 py-2 text-xs">BLOCK {cardClaim}</button>)}
+          {(state.phase === GamePhase.BLOCK_DECLARED || state.pendingAction?.action !== ActionType.FOREIGN_AID) && <button onClick={() => send({ type: 'challenge' })} className="rounded bg-red-900/60 px-3 py-2 text-xs font-bold text-red-100">CHALLENGE</button>}
+          {state.phase === GamePhase.ACTION_DECLARED && ((state.pendingAction?.action === ActionType.FOREIGN_AID ? [CardType.DUKE] : state.pendingAction?.action === ActionType.STEAL && state.pendingAction.targetId === currentUserId ? [CardType.CAPTAIN, CardType.AMBASSADOR] : state.pendingAction?.action === ActionType.ASSASSINATE && state.pendingAction.targetId === currentUserId ? [CardType.CONTESSA] : [])).map(cardClaim => <button key={cardClaim} onClick={() => send({ type: 'block', cardClaim })} className="rounded bg-slate-800 px-3 py-2 text-xs">BLOCK {cardClaim}</button>)}
         </div>}
       </div>
     </div>

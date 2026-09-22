@@ -61,7 +61,9 @@ const RootComponent = () => {
   }
 
   if (window.location.pathname === '/game/rules') return <Rules onBack={() => { window.location.href = '/game'; }} />;
-  if (window.location.pathname === '/game') return <GameHub />;
+  if (window.location.pathname === '/game' || /^\/game\/[^/]+$/.test(window.location.pathname)) {
+    return <GameHub roomId={window.location.pathname === '/game' ? undefined : decodeURIComponent(window.location.pathname.slice('/game/'.length))} />;
+  }
 
   if (view === 'admin' && authStatus === 'admin') return <AdminPanel onNavigate={setView} />;
   if (view === 'leaderboard') return <Leaderboard onBack={() => setView('game')} />;

@@ -14,6 +14,9 @@ type StoredRoom = {
   remaining: Record<string, number>;
   phaseStartedAt: number;
   revision: number;
+  activity: Record<string, number>;
+  pausedAt?: number;
+  endedAt?: number;
 };
 type RoomAction = {
   type: 'action' | 'pass' | 'lose' | 'challenge' | 'block';
@@ -57,7 +60,9 @@ export class RoomGame {
     const body = await request.json() as any;
     if (body.type === 'initialize') {
       if (request.headers.get('X-Room-Internal') !== '1' || !body.room) return json({ error: 'Forbidden' }, 403);
-      const room: StoredRoom = { ...body.room, phaseStartedAt: Date.now(), revision: body.room.state.revision || 0 };
+      const now = Date.now();
+      const humans = body.room.state.players.filter((player: any) => !player.isAI);
+      const room: StoredRoom = { ...body.room, phaseStartedAt: now, revision: body.room.state.revision || 0, activity: Object.fromEntries(humans.map((player: any) => [player.id, now])) };
       await this.save(room);
       await this.publish(room);
       await this.schedule(room);
@@ -66,6 +71,11 @@ export class RoomGame {
     }
     const room = await this.load();
     if (!room) return json({ error: 'Room has not started' }, 409);
+    if (body.type === 'resume' || body.type === 'close') {
+      if (request.headers.get('X-Room-Internal') !== '1') return json({ error: 'Forbidden' }, 403);
+      return body.type === 'resume' ? this.resume(room) : this.close(room);
+    }
+    if (room.pausedAt) return json({ error: 'Room is paused' }, 409);
     if (!actorId || !room.state.players.some(player => player.id === actorId && !player.isAI)) return json({ error: 'Forbidden' }, 403);
     if (body.type === 'state') return json(this.view(room, actorId));
     return this.apply(room, actorId, body as RoomAction);
@@ -73,7 +83,14 @@ export class RoomGame {
 
   async alarm() {
     const room = await this.load();
-    if (!room || room.state.phase === GamePhase.GAME_OVER) return;
+    if (!room || room.pausedAt) return;
+    if (room.state.phase === GamePhase.GAME_OVER) {
+      const closeAt = (room.endedAt || Date.now()) + 1_800_000;
+      if (closeAt > Date.now()) return this.state.storage.setAlarm(closeAt);
+      await this.env.DB?.prepare('UPDATE rooms SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').bind('closed', Date.now(), Date.now(), room.roomId).run();
+      return this.state.storage.deleteAlarm();
+    }
+    if (this.allHumansInactive(room)) return this.pause(room);
     const timedActor = this.timedActor(room.state);
     if (!timedActor || timedActor.isAI) return;
     const deadline = this.deadline(room, timedActor.id);
@@ -127,7 +144,7 @@ export class RoomGame {
     if (body.type === 'challenge') next = handleChallenge(state, actorId);
     if (body.type === 'block' && body.cardClaim) next = handleBlock(state, actorId, body.cardClaim);
     if (next === state) return json({ error: 'Illegal room action' }, 400);
-    const updated = this.advance({ ...charged, state: next });
+    const updated = this.advance({ ...charged, state: next, activity: { ...charged.activity, [actorId]: Date.now() } });
     await this.save(updated);
     if (body.clientActionId) await this.recordAction(updated, actorId, body.clientActionId, body);
     await this.publish(updated);
@@ -136,7 +153,7 @@ export class RoomGame {
     return json(this.view(updated, actorId));
   }
 
-  private advance(room: StoredRoom): StoredRoom { return { ...room, revision: room.state.revision, phaseStartedAt: Date.now() }; }
+  private advance(room: StoredRoom): StoredRoom { const now = Date.now(); return { ...room, revision: room.state.revision, phaseStartedAt: now, endedAt: room.state.phase === GamePhase.GAME_OVER ? (room.endedAt || now) : room.endedAt }; }
 
   private timedActor(state: GameState) {
     const id = state.phase === GamePhase.TURN_START ? state.players[state.currentPlayerIndex]?.id
@@ -156,22 +173,24 @@ export class RoomGame {
   }
 
   private async schedule(room: StoredRoom) {
-    if (room.state.phase === GamePhase.GAME_OVER) return this.state.storage.deleteAlarm();
+    if (room.pausedAt) return this.state.storage.deleteAlarm();
+    if (room.state.phase === GamePhase.GAME_OVER) return this.state.storage.setAlarm((room.endedAt || Date.now()) + 1_800_000);
     const actor = this.timedActor(room.state);
-    if (!actor || actor.isAI) return this.state.storage.deleteAlarm();
-    const deadline = this.deadline(room, actor.id);
-    if (deadline) await this.state.storage.setAlarm(Math.max(Date.now(), deadline));
+    if (!actor) return this.state.storage.deleteAlarm();
+    const deadline = actor.isAI ? undefined : this.deadline(room, actor.id);
+    const inactiveAt = Math.min(...Object.values(room.activity).map(value => value + 300_000));
+    if (deadline || Number.isFinite(inactiveAt)) await this.state.storage.setAlarm(Math.max(Date.now(), Math.min(deadline || Infinity, inactiveAt)));
   }
 
   private view(room: StoredRoom, viewerId: string) {
     const actor = this.timedActor(room.state);
-    return { state: projectRoomState(room.state, viewerId), remaining: room.remaining, revision: room.revision, deadline: actor ? this.deadline(room, actor.id) ?? null : null };
+    return { state: projectRoomState(room.state, viewerId), remaining: room.remaining, revision: room.revision, deadline: actor ? this.deadline(room, actor.id) ?? null : null, paused: Boolean(room.pausedAt), endedAt: room.endedAt ?? null };
   }
 
   private async save(room: StoredRoom) {
     await this.state.storage.put('room', room);
     await this.env.DB?.prepare('INSERT INTO room_snapshots (room_id, revision, state_json, clocks_json, saved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(room_id) DO UPDATE SET revision=excluded.revision, state_json=excluded.state_json, clocks_json=excluded.clocks_json, saved_at=excluded.saved_at')
-      .bind(room.roomId, room.revision, JSON.stringify(room.state), JSON.stringify({ remaining: room.remaining, phaseStartedAt: room.phaseStartedAt }), Date.now()).run();
+      .bind(room.roomId, room.revision, JSON.stringify(room.state), JSON.stringify({ remaining: room.remaining, phaseStartedAt: room.phaseStartedAt, activity: room.activity, pausedAt: room.pausedAt, endedAt: room.endedAt }), Date.now()).run();
     if (room.state.phase === GamePhase.GAME_OVER) await this.saveFinalHistory(room);
   }
   private load() { return this.state.storage.get('room') as Promise<StoredRoom | undefined>; }
@@ -180,6 +199,31 @@ export class RoomGame {
       try { socket.send(JSON.stringify({ type: 'state', ...this.view(room, viewerId) })); }
       catch { this.sockets.delete(socket); }
     }
+  }
+
+  private allHumansInactive(room: StoredRoom) {
+    const humans = room.state.players.filter(player => !player.isAI);
+    return humans.length > 0 && humans.every(player => (room.activity[player.id] || 0) + 300_000 <= Date.now());
+  }
+
+  private async pause(room: StoredRoom) {
+    const paused = { ...room, pausedAt: Date.now() };
+    await this.save(paused); await this.publish(paused);
+    await this.env.DB?.prepare('UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?').bind('paused', Date.now(), room.roomId).run();
+    await this.state.storage.deleteAlarm();
+  }
+
+  private async resume(room: StoredRoom) {
+    const now = Date.now(); const resumed = { ...room, pausedAt: undefined, activity: Object.fromEntries(room.state.players.filter(player => !player.isAI).map(player => [player.id, now])), phaseStartedAt: now };
+    await this.save(resumed); await this.publish(resumed); await this.schedule(resumed); await this.maybeRunAi(resumed);
+    await this.env.DB?.prepare('UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?').bind('started', now, room.roomId).run();
+    return json(this.view(resumed, room.owner.uuid));
+  }
+
+  private async close(room: StoredRoom) {
+    const ended = this.advance({ ...room, state: { ...room.state, phase: GamePhase.GAME_OVER, winner: null } });
+    await this.save(ended); await this.publish(ended); await this.state.storage.deleteAlarm();
+    return json(this.view(ended, room.owner.uuid));
   }
 
   private async recordAction(room: StoredRoom, actorId: string, actionId: string, body: RoomAction) {

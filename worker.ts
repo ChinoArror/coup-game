@@ -277,8 +277,21 @@ export default {
       }
 
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/close') && request.method === 'POST') {
-        const user = requireSession(); const id = roomIdFromPath('/close'); if (!id) throw new HttpError(404, 'Room not found'); await requireRoomOwner(id, user);
+        const user = requireSession(); const id = roomIdFromPath('/close'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user);
+        if ((room.status === 'started' || room.status === 'paused') && env.ROOM_GAME) {
+          const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+          await stub.fetch(new Request('https://room.internal/close', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Room-Internal': '1', 'X-Room-Actor': user.uuid }, body: JSON.stringify({ type: 'close' }) }));
+        }
         await env.DB.prepare('UPDATE rooms SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').bind('closed', Date.now(), Date.now(), id).run(); return json({ status: 'closed' });
+      }
+
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/resume') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/resume'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user);
+        if (room.status !== 'paused') throw new HttpError(409, 'Room is not paused'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
+        const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+        const resumed = await stub.fetch(new Request('https://room.internal/resume', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Room-Internal': '1', 'X-Room-Actor': user.uuid }, body: JSON.stringify({ type: 'resume' }) }));
+        if (!resumed.ok) throw new HttpError(502, 'Room resume failed');
+        return json({ status: 'started' });
       }
 
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/leave') && request.method === 'POST') {
@@ -296,7 +309,7 @@ export default {
 
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/socket') && request.method === 'GET') {
         const user = requireSession(); const id = roomIdFromPath('/socket'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
-        if (room.status !== 'started') throw new HttpError(409, 'Room has not started'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
+        if (room.status !== 'started' && room.status !== 'paused') throw new HttpError(409, 'Room has not started'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
         const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
         return stub.fetch(new Request('https://room.internal/socket', { headers: { Upgrade: 'websocket', 'X-Room-Actor': user.uuid } }));
       }

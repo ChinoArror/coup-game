@@ -2,7 +2,7 @@ export type RoomMember = { uuid: string; name: string; seatIndex: number; ready:
 export type RoomDetails = {
   id: string;
   ownerUuid: string;
-  status: 'open' | 'started' | 'closed';
+  status: 'open' | 'started' | 'paused' | 'closed';
   seatCount: number;
   aiChannels: string[];
   aiNames: string[];
@@ -13,7 +13,7 @@ export type RoomDetails = {
 
 export type RoomSummary = {
   id: string;
-  status: 'open' | 'started' | 'closed';
+  status: 'open' | 'started' | 'paused' | 'closed';
   seatCount: number;
   aiChannels: string[];
   timeControls: { stepLimitMs?: number; totalLimitMs?: number };
@@ -38,6 +38,7 @@ export const roomApi = {
   ready: (id: string, ready: boolean) => api(`/api/rooms/${encodeURIComponent(id)}/ready`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ready }) }),
   start: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/start`, { method: 'POST' }),
   close: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+  resume: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
   leave: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/leave`, { method: 'POST' }),
   kick: (id: string, userUuid: string) => api(`/api/rooms/${encodeURIComponent(id)}/kick`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userUuid }) }),
 };
