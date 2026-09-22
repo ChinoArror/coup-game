@@ -71,9 +71,11 @@ export class RoomGame {
     }
     const room = await this.load();
     if (!room) return json({ error: 'Room has not started' }, 409);
-    if (body.type === 'resume' || body.type === 'close') {
+    if (body.type === 'resume' || body.type === 'pause' || body.type === 'close') {
       if (request.headers.get('X-Room-Internal') !== '1') return json({ error: 'Forbidden' }, 403);
-      return body.type === 'resume' ? this.resume(room) : this.close(room);
+      if (body.type === 'resume') return this.resume(room);
+      if (body.type === 'pause') { await this.pause(room); return json(this.view({ ...room, pausedAt: Date.now() }, room.owner.uuid)); }
+      return this.close(room);
     }
     if (room.pausedAt) return json({ error: 'Room is paused' }, 409);
     if (!actorId || !room.state.players.some(player => player.id === actorId && !player.isAI)) return json({ error: 'Forbidden' }, 403);

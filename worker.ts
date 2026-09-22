@@ -294,6 +294,14 @@ export default {
         return json({ status: 'started' });
       }
 
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/pause') && request.method === 'POST') {
+        const user = requireSession(); const id = roomIdFromPath('/pause'); if (!id) throw new HttpError(404, 'Room not found'); const room = await requireRoomOwner(id, user);
+        if (room.status !== 'started') throw new HttpError(409, 'Room is not active'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
+        const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+        const paused = await stub.fetch(new Request('https://room.internal/pause', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Room-Internal': '1', 'X-Room-Actor': user.uuid }, body: JSON.stringify({ type: 'pause' }) }));
+        if (!paused.ok) throw new HttpError(502, 'Room pause failed'); return json({ status: 'paused' });
+      }
+
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/leave') && request.method === 'POST') {
         const user = requireSession(); const id = roomIdFromPath('/leave'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
         if (room.status !== 'open') throw new HttpError(409, 'Players cannot leave a started room'); if (room.owner_uuid === user.uuid) throw new HttpError(409, 'The owner must close the room instead');
