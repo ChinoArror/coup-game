@@ -105,6 +105,11 @@ export default {
       return validChannel(record?.channel_id) ? record.channel_id : (playerSlot === 'alapha' ? '1' : '2');
     };
 
+    const ensureHistoryTable = async () => {
+      await env.DB.prepare('CREATE TABLE IF NOT EXISTS game_history (id TEXT PRIMARY KEY, user_uuid TEXT NOT NULL, game_id TEXT NOT NULL UNIQUE, completed_at INTEGER NOT NULL, winner TEXT, ai_channels_json TEXT NOT NULL, state_json TEXT NOT NULL)').run();
+      await env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_game_history_user_completed ON game_history(user_uuid, completed_at DESC)').run();
+    };
+
     const checkQuota = async (user: NonNullable<typeof session>) => {
       const response = await fetch(`${SSO_URL}/api/quota/check?uuid=${encodeURIComponent(user.uuid)}&app_id=${encodeURIComponent(appId)}`, {
         headers: { Authorization: `Bearer ${appSecret}` },
@@ -185,6 +190,55 @@ export default {
         const channelId = await getChannelForSlot(body.playerSlot);
         const result = await callWithQuota(user, channelId, body.systemInstruction, body.userMessage);
         return json({ content: result.content });
+      }
+
+      if (url.pathname === '/api/history' || url.pathname.startsWith('/api/history/')) {
+        const user = requireSession();
+        await ensureHistoryTable();
+        const itemId = url.pathname === '/api/history' ? null : decodeURIComponent(url.pathname.slice('/api/history/'.length));
+        if (itemId && itemId.includes('/')) throw new HttpError(404, 'History item not found');
+
+        if (!itemId && request.method === 'GET') {
+          const { results } = await env.DB.prepare('SELECT id, game_id, completed_at, winner, ai_channels_json FROM game_history WHERE user_uuid = ? ORDER BY completed_at DESC').bind(user.uuid).all() as any;
+          return json(results.map((record: any) => ({ ...record, ai_channels: JSON.parse(record.ai_channels_json) })));
+        }
+
+        if (!itemId && request.method === 'POST') {
+          const body = await request.json() as any;
+          const state = body?.state;
+          if (!state || state.phase !== 'GAME_OVER' || typeof state.gameId !== 'string' || !Array.isArray(state.players) || !Array.isArray(state.logs)) {
+            throw new HttpError(400, 'A completed game state is required');
+          }
+          const aiChannels = { alapha: await getChannelForSlot('alapha'), beta: await getChannelForSlot('beta') };
+          const record = {
+            id: crypto.randomUUID(),
+            game_id: state.gameId,
+            completed_at: Date.now(),
+            winner: typeof state.winner === 'string' ? state.winner : null,
+            ai_channels: aiChannels,
+          };
+          try {
+            await env.DB.prepare('INSERT INTO game_history (id, user_uuid, game_id, completed_at, winner, ai_channels_json, state_json) VALUES (?, ?, ?, ?, ?, ?, ?)')
+              .bind(record.id, user.uuid, record.game_id, record.completed_at, record.winner, JSON.stringify(aiChannels), JSON.stringify(state)).run();
+          } catch {
+            throw new HttpError(409, 'This game is already recorded');
+          }
+          return json(record, 201);
+        }
+
+        if (itemId && request.method === 'GET') {
+          const record = await env.DB.prepare('SELECT id, game_id, completed_at, winner, ai_channels_json, state_json FROM game_history WHERE id = ? AND user_uuid = ?').bind(itemId, user.uuid).first() as any;
+          if (!record) throw new HttpError(404, 'History item not found');
+          return json({ ...record, ai_channels: JSON.parse(record.ai_channels_json), state: JSON.parse(record.state_json) });
+        }
+
+        if (itemId && request.method === 'DELETE') {
+          const result = await env.DB.prepare('DELETE FROM game_history WHERE id = ? AND user_uuid = ?').bind(itemId, user.uuid).run() as any;
+          if (!result.meta?.changes) throw new HttpError(404, 'History item not found');
+          return json({ success: true });
+        }
+
+        throw new HttpError(405, 'Method not allowed');
       }
 
       if (url.pathname === '/api/process') {

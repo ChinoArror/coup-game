@@ -20,6 +20,19 @@ CREATE TABLE process (
   updated_at INTEGER
 );
 
+-- Private completed-match snapshots. The Worker also creates this table lazily
+-- so existing deployed D1 databases receive the feature without a reset.
+CREATE TABLE game_history (
+  id TEXT PRIMARY KEY,
+  user_uuid TEXT NOT NULL,
+  game_id TEXT NOT NULL UNIQUE,
+  completed_at INTEGER NOT NULL,
+  winner TEXT,
+  ai_channels_json TEXT NOT NULL,
+  state_json TEXT NOT NULL
+);
+CREATE INDEX idx_game_history_user_completed ON game_history(user_uuid, completed_at DESC);
+
 -- Leaderboard with game_id to prevent duplicates
 DROP TABLE IF EXISTS leaderboard;
 CREATE TABLE leaderboard (
