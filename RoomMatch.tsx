@@ -78,7 +78,7 @@ function ActionButton({ label, sub, onClick, color = 'slate' }: { label: string;
   );
 }
 
-export default function RoomMatch({ roomId, currentUserId }: { roomId: string; currentUserId: string }) {
+export default function RoomMatch({ roomId, currentUserId, spectator = false, watchToken }: { roomId: string; currentUserId: string; spectator?: boolean; watchToken?: string }) {
   const [wire, setWire] = useState<RoomWireState | null>(null);
   const [error, setError] = useState('');
   const [targetAction, setTargetAction] = useState<ActionType | null>(null);
@@ -89,7 +89,10 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
     let retry: number | undefined;
     const connect = () => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/api/rooms/${encodeURIComponent(roomId)}/socket`);
+      const socketUrl = new URL(`${protocol}//${window.location.host}/api/rooms/${encodeURIComponent(roomId)}/socket`);
+      if (spectator && watchToken && watchToken !== 'admin') socketUrl.searchParams.set('invite', watchToken);
+      if (spectator && watchToken === 'admin') socketUrl.searchParams.set('admin', '1');
+      const ws = new WebSocket(socketUrl);
       socket.current = ws;
       ws.onmessage = event => {
         const message = JSON.parse(event.data);
@@ -111,10 +114,11 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
       if (retry) window.clearTimeout(retry);
       socket.current?.close();
     };
-  }, [roomId]);
+  }, [roomId, spectator, watchToken]);
 
   const state = wire?.state;
   const me = state?.players.find(player => player.id === currentUserId);
+  const boardPlayer = me || state?.players[state.currentPlayerIndex];
   const opponents = useMemo(() => state?.players.filter(player => player.id !== currentUserId) || [], [state, currentUserId]);
   const send = (body: Record<string, unknown>) => {
     if (!wire || socket.current?.readyState !== WebSocket.OPEN) {
@@ -125,11 +129,11 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
     setTargetAction(null);
   };
 
-  if (!state || !me) return <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 font-mono text-amber-500 animate-pulse">ESTABLISHING CONNECTION...</div>;
+  if (!state || !boardPlayer) return <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 font-mono text-amber-500 animate-pulse">ESTABLISHING CONNECTION...</div>;
 
-  const isMyTurn = state.phase === GamePhase.TURN_START && state.players[state.currentPlayerIndex]?.id === currentUserId;
-  const mustCoup = me.coins >= 10;
-  const canRespond = state.waitingForResponseFrom.includes(currentUserId);
+  const isMyTurn = !wire?.paused && !spectator && state.phase === GamePhase.TURN_START && state.players[state.currentPlayerIndex]?.id === currentUserId;
+  const mustCoup = boardPlayer.coins >= 10;
+  const canRespond = !wire?.paused && !spectator && state.waitingForResponseFrom.includes(currentUserId);
   const isActionPhase = state.phase === GamePhase.ACTION_DECLARED;
   const isBlockPhase = state.phase === GamePhase.BLOCK_DECLARED;
   const mustLoseInfluence = state.phase === GamePhase.CHALLENGE_LOSS && state.playerToLoseInfluence === currentUserId;
@@ -140,7 +144,9 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
   const canBlockCaptain = isActionPhase && incomingAction === ActionType.STEAL && isTargeted;
   const canBlockAmbassador = canBlockCaptain;
   const canChallenge = (isActionPhase && incomingAction !== ActionType.FOREIGN_AID) || isBlockPhase;
-  const status = state.phase === GamePhase.GAME_OVER
+  const status = wire?.paused
+    ? 'ROOM PAUSED. WAITING FOR OWNER...'
+    : state.phase === GamePhase.GAME_OVER
     ? `GAME OVER. WINNER: ${state.winner || 'ROOM CLOSED'}`
     : targetAction
       ? `Select target for ${targetAction}...`
@@ -160,7 +166,7 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
                 key={player.id}
                 player={player}
                 currentTurn={player.id === state.players[state.currentPlayerIndex]?.id}
-                target={Boolean(targetAction && !player.isEliminated)}
+                target={Boolean(targetAction && !wire?.paused && !spectator && !player.isEliminated)}
                 onTarget={() => targetAction && send({ type: 'action', action: targetAction, targetId: player.id })}
               />
             ))}
@@ -183,15 +189,15 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
           <div className={`rounded-2xl border-2 p-6 transition-all ${isMyTurn ? 'border-amber-500 bg-slate-900/80' : 'border-slate-800 bg-slate-900'}`}>
             <div className="mb-6 flex items-end justify-between">
               <div>
-                <h2 className="mb-1 text-xl font-bold text-white">{me.name}</h2>
-                <div className="flex items-center gap-2 font-mono text-lg text-amber-400"><CircleDollarSign size={18} /> {me.coins} Credits</div>
+                <h2 className="mb-1 text-xl font-bold text-white">{spectator ? 'SPECTATOR VIEW' : boardPlayer.name}</h2>
+                <div className="flex items-center gap-2 font-mono text-lg text-amber-400"><CircleDollarSign size={18} /> {spectator ? '—' : `${boardPlayer.coins} Credits`}</div>
               </div>
               {mustLoseInfluence && <div className="flex items-center gap-2 font-mono font-bold text-red-500 animate-pulse"><AlertTriangle size={18} /> Choose card to lose</div>}
             </div>
 
             <div className="mb-6 flex flex-wrap gap-4">
-              {me.cards.map(card => (
-                <button key={card.id} disabled={!mustLoseInfluence || card.isRevealed} onClick={() => send({ type: 'lose', cardId: card.id })} className={`flex h-36 w-24 flex-col items-center justify-between rounded-lg border-2 p-2 transition-all duration-300 ${card.isRevealed ? 'border-slate-700 bg-slate-900 text-slate-600 grayscale opacity-50' : mustLoseInfluence ? 'cursor-pointer border-red-500 bg-red-900/20 shadow-[0_0_15px_rgba(239,68,68,0.3)]' : 'border-slate-600 bg-gradient-to-br from-slate-800 to-slate-900'}`}>
+              {boardPlayer.cards.map(card => (
+                <button key={card.id} disabled={!me || !mustLoseInfluence || card.isRevealed} onClick={() => me && send({ type: 'lose', cardId: card.id })} className={`flex h-36 w-24 flex-col items-center justify-between rounded-lg border-2 p-2 transition-all duration-300 ${card.isRevealed ? 'border-slate-700 bg-slate-900 text-slate-600 grayscale opacity-50' : mustLoseInfluence ? 'cursor-pointer border-red-500 bg-red-900/20 shadow-[0_0_15px_rgba(239,68,68,0.3)]' : 'border-slate-600 bg-gradient-to-br from-slate-800 to-slate-900'}`}>
                   <span className="font-mono text-xs opacity-50">{card.isRevealed ? 'LOST' : 'ACTIVE'}</span>
                   <span className={`text-center text-sm font-bold ${getCardCaptionClass(card.type)}`}>{card.type}</span>
                   <span className={`mt-2 text-xs uppercase tracking-wider ${getCardCaptionClass(card.type)}`}>{getCardCaption(card.type)}</span>
@@ -200,7 +206,7 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
             </div>
 
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              {isMyTurn && !me.isEliminated && (
+              {isMyTurn && me && !boardPlayer.isEliminated && (
                 <>
                   {!mustCoup && (
                     <>
@@ -209,10 +215,10 @@ export default function RoomMatch({ roomId, currentUserId }: { roomId: string; c
                       <ActionButton label="Tax (3)" sub="Claims Duke" color="purple" onClick={() => send({ type: 'action', action: ActionType.TAX })} />
                       <ActionButton label="Exchange" sub="Claims Ambassador" color="blue" onClick={() => send({ type: 'action', action: ActionType.EXCHANGE })} />
                       <ActionButton label="Steal (2)" sub="Claims Captain" color="green" onClick={() => setTargetAction(ActionType.STEAL)} />
-                      {me.coins >= 3 && <ActionButton label="Assassinate (3)" sub="Claims Assassin" color="red" onClick={() => setTargetAction(ActionType.ASSASSINATE)} />}
+                      {boardPlayer.coins >= 3 && <ActionButton label="Assassinate (3)" sub="Claims Assassin" color="red" onClick={() => setTargetAction(ActionType.ASSASSINATE)} />}
                     </>
                   )}
-                  {me.coins >= 7 && <ActionButton label="Coup (7)" sub="Unblockable" color="red" onClick={() => setTargetAction(ActionType.COUP)} />}
+                  {boardPlayer.coins >= 7 && <ActionButton label="Coup (7)" sub="Unblockable" color="red" onClick={() => setTargetAction(ActionType.COUP)} />}
                   {targetAction && <button onClick={() => setTargetAction(null)} className="col-span-2 mt-2 rounded-lg border border-slate-600 bg-slate-800 py-2 font-bold uppercase tracking-widest text-white md:col-span-4">Cancel Target Selection</button>}
                 </>
               )}

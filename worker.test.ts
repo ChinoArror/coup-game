@@ -81,6 +81,9 @@ class FakeDatabase {
   }
 
   private async all(sql: string, values: unknown[]) {
+    if (sql.includes('FROM rooms WHERE status != ?')) {
+      return { results: [...this.rooms.values()].filter(room => room.status !== String(values[0])) };
+    }
     if (sql.includes('FROM room_members WHERE room_id = ? AND left_at IS NULL')) {
       return { results: [...this.roomMembers.values()].filter(record => record.room_id === String(values[0]) && !record.left_at).sort((a, b) => a.seat_index - b.seat_index) };
     }
@@ -120,8 +123,8 @@ class FakeDatabase {
       if (record) record.is_ready = Number(values[0]);
     }
     if (sql.includes("UPDATE rooms SET status = ?")) {
-      const room = this.rooms.get(String(values[2]));
-      if (room) { room.status = String(values[0]); room.updated_at = Number(values[1]); if (String(values[0]) === 'closed') room.closed_at = Number(values[1]); }
+      const room = this.rooms.get(String(values[values.length - 1]));
+      if (room) { room.status = String(values[0]); room.updated_at = Number(values[values.length - 2]); if (String(values[0]) === 'closed') room.closed_at = Number(values[values.length - 2]); }
     }
     if (sql.includes('UPDATE rooms SET updated_at = ?')) {
       const room = this.rooms.get(String(values[1])); if (room) room.updated_at = Number(values[0]);
@@ -349,6 +352,47 @@ describe('multiplayer room lifecycle', () => {
     expect(db.rooms.get(room.id)?.status).toBe('started');
     expect(initialized[0]).toMatchObject({ type: 'initialize', room: { roomId: room.id, owner: { uuid: 'user-uuid' } } });
     expect(initialized[0].room.state.players.map((player: any) => player.name)).toEqual(['user', 'I', 'III']);
+  });
+
+  it('lets admins list active rooms and observe them without taking a seat', async () => {
+    const { env, db } = createEnvironment();
+    installFetchMock();
+    const created = await worker.fetch(request('/api/rooms', 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seatCount: 3, aiChannels: [] }),
+    }), env, { waitUntil() {} } as any);
+    const room = await created.json() as any;
+    db.rooms.get(room.id)!.status = 'started';
+    const token = new URL(room.invite.url).searchParams.get('invite')!;
+
+    const rooms = await worker.fetch(request('/api/admin/rooms', 'admin'), env, { waitUntil() {} } as any);
+    expect(rooms.status).toBe(200);
+    expect(await rooms.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: room.id, status: 'started' })]));
+
+    const watch = await worker.fetch(request(`/api/admin/rooms/${room.id}/watch`, 'admin'), env, { waitUntil() {} } as any);
+    expect(watch.status).toBe(200);
+    expect(await watch.json()).toMatchObject({ id: room.id, spectator: true, status: 'started' });
+
+    const inviteWatch = await worker.fetch(request(`/api/rooms/${room.id}/watch?invite=${encodeURIComponent(token)}`, 'user'), env, { waitUntil() {} } as any);
+    expect(inviteWatch.status).toBe(200);
+    expect(await inviteWatch.json()).toMatchObject({ id: room.id, spectator: true, status: 'started' });
+
+    const inviteRecord = [...db.roomInvites.values()][0];
+    inviteRecord.use_count = inviteRecord.max_uses;
+    const resolvedAfterJoin = await worker.fetch(request(`/api/rooms/invite/${encodeURIComponent(token)}`, 'user'), env, { waitUntil() {} } as any);
+    expect(resolvedAfterJoin.status).toBe(200);
+    expect(await resolvedAfterJoin.json()).toMatchObject({ canJoin: false, canWatch: true });
+
+    const closed = await worker.fetch(request(`/api/admin/rooms/${room.id}/close`, 'admin', { method: 'POST' }), env, { waitUntil() {} } as any);
+    expect(closed.status).toBe(200);
+    expect(db.rooms.get(room.id)?.status).toBe('closed');
+  });
+
+  it('rejects ordinary users from the admin room list', async () => {
+    const { env } = createEnvironment();
+    installFetchMock();
+    const response = await worker.fetch(request('/api/admin/rooms', 'user'), env, { waitUntil() {} } as any);
+    expect(response.status).toBe(403);
   });
 });
 

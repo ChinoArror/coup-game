@@ -1,21 +1,98 @@
-import { useEffect, useState } from 'react';
-import { ArrowLeft, BookOpen, DoorOpen, Plus, RefreshCw, Users, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, BookOpen, DoorOpen, Filter, Plus, RefreshCw, Users, X } from 'lucide-react';
 import RoomLobby from './RoomLobby';
 import RoomMatch from './RoomMatch';
 import { roomApi, type RoomDetails, type RoomSummary } from './services/roomClient';
+import { filterRoomSummaries, roomAiLabels, roomStatusLabel, type RoomFilter } from './services/roomUi';
 
 const channels = ['1', '2', '3'];
 
 export default function GameHub({ roomId }: { roomId?: string }) {
-  const [rooms, setRooms] = useState<RoomSummary[]>([]); const [active, setActive] = useState<RoomDetails | null>(null); const [me, setMe] = useState('');
-  const [seatCount, setSeatCount] = useState(3); const [selected, setSelected] = useState<string[]>([]); const [stepSeconds, setStepSeconds] = useState(''); const [totalMinutes, setTotalMinutes] = useState('');
-  const [inviteToken, setInviteToken] = useState(new URLSearchParams(location.search).get('invite') || ''); const [clipboardInvite, setClipboardInvite] = useState<string | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  const load = async () => { const [list, identity] = await Promise.all([roomApi.list(), fetch('/api/me').then(response => response.json())]); setRooms(list); setMe(identity.uuid); };
-  const openRoom = async (id: string) => { setActive(await roomApi.get(id)); history.pushState({}, '', `/game/${encodeURIComponent(id)}`); };
-  const backToHub = () => { setActive(null); history.pushState({}, '', '/game'); void load().catch(reason => setError(reason.message)); };
-  const run = async (operation: () => Promise<unknown>) => { const openedRoomId = active?.id; setBusy(true); setError(''); try { await operation(); await load(); if (openedRoomId && window.location.pathname !== '/game') setActive(await roomApi.get(openedRoomId)); } catch (reason: any) { setError(reason.message || 'Room request failed'); } finally { setBusy(false); } };
-  useEffect(() => { void load().catch(reason => setError(reason.message)); if (roomId) void openRoom(roomId).catch(reason => setError(reason.message)); }, [roomId]);
-  useEffect(() => { if (!inviteToken) return; void roomApi.resolveInvite(inviteToken).catch(reason => setError(reason.message)); }, [inviteToken]);
+  const initialSearch = new URLSearchParams(location.search);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [active, setActive] = useState<RoomDetails | null>(null);
+  const [me, setMe] = useState('');
+  const [seatCount, setSeatCount] = useState(3);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [stepSeconds, setStepSeconds] = useState('');
+  const [totalMinutes, setTotalMinutes] = useState('');
+  const [inviteToken, setInviteToken] = useState(initialSearch.get('invite') || '');
+  const [watchToken, setWatchToken] = useState(initialSearch.get('watch') || '');
+  const [clipboardInvite, setClipboardInvite] = useState<string | null>(null);
+  const [roomFilter, setRoomFilter] = useState<RoomFilter>('active');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const [list, identity] = await Promise.all([roomApi.list(), fetch('/api/me').then(response => response.json())]);
+    setRooms(list);
+    setMe(identity.uuid);
+  };
+
+  const getActiveDetails = async (id: string, mode = watchToken) => {
+    if (mode === 'admin') return roomApi.adminWatch(id);
+    if (mode) return roomApi.watch(id, mode);
+    return roomApi.get(id);
+  };
+
+  const openRoom = async (id: string) => {
+    setWatchToken('');
+    setActive(await roomApi.get(id));
+    history.pushState({}, '', `/game/${encodeURIComponent(id)}`);
+  };
+
+  const openWatch = async (id: string, token: string) => {
+    setWatchToken(token);
+    setActive(await (token === 'admin' ? roomApi.adminWatch(id) : roomApi.watch(id, token)));
+    history.pushState({}, '', `/game/${encodeURIComponent(id)}?watch=${encodeURIComponent(token)}`);
+  };
+
+  const backToHub = () => {
+    setActive(null);
+    setWatchToken('');
+    history.pushState({}, '', '/game');
+    void load().catch(reason => setError(reason.message));
+  };
+
+  const refreshActive = async () => {
+    await load();
+    if (active?.id) setActive(await getActiveDetails(active.id));
+  };
+
+  const run = async (operation: () => Promise<unknown>) => {
+    const openedRoomId = active?.id;
+    const openedWatchToken = watchToken;
+    setBusy(true);
+    setError('');
+    try {
+      await operation();
+      await load();
+      if (openedRoomId && window.location.pathname !== '/game') {
+        setActive(await getActiveDetails(openedRoomId, openedWatchToken));
+      }
+    } catch (reason: any) {
+      setError(reason.message || 'Room request failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    void load().catch(reason => setError(reason.message));
+    if (!roomId) return;
+    const routeWatch = new URLSearchParams(location.search).get('watch') || '';
+    if (routeWatch) void openWatch(roomId, routeWatch).catch(reason => setError(reason.message));
+    else void openRoom(roomId).catch(reason => setError(reason.message));
+  }, [roomId]);
+
+  useEffect(() => {
+    if (!inviteToken) return;
+    void roomApi.resolveInvite(inviteToken).then(result => {
+      if (result.canWatch) return openWatch(result.room.id, inviteToken);
+      return undefined;
+    }).catch(reason => setError(reason.message));
+  }, [inviteToken]);
+
   useEffect(() => {
     if (roomId || inviteToken || !navigator.clipboard) return;
     const readFirstClipboardText = async () => {
@@ -29,20 +106,51 @@ export default function GameHub({ roomId }: { roomId?: string }) {
       return navigator.clipboard.readText ? navigator.clipboard.readText() : '';
     };
     void readFirstClipboardText().then(text => {
-      const raw = text.trim(); let parsed: URL;
+      const raw = text.trim();
+      let parsed: URL;
       try { parsed = new URL(raw); } catch { return; }
       if (parsed.origin === location.origin && parsed.pathname === '/game' && /^[a-f0-9]{32,}$/i.test(parsed.searchParams.get('invite') || '')) setClipboardInvite(parsed.searchParams.get('invite'));
     }).catch(() => undefined);
   }, [roomId, inviteToken]);
+
   useEffect(() => {
-    if (!clipboardInvite) return; const y = window.scrollY; const style = document.body.style;
+    if (!clipboardInvite) return;
+    const y = window.scrollY;
+    const style = document.body.style;
     const previous = { position: style.position, top: style.top, width: style.width, overflow: document.documentElement.style.overflow };
     style.position = 'fixed'; style.top = `-${y}px`; style.width = '100%'; document.documentElement.style.overflow = 'hidden';
     return () => { style.position = previous.position; style.top = previous.top; style.width = previous.width; document.documentElement.style.overflow = previous.overflow; window.scrollTo(0, y); };
   }, [clipboardInvite]);
-  const create = () => run(async () => { const result = await roomApi.create({ seatCount, aiChannels: selected, timeControls: { ...(stepSeconds ? { stepLimitMs: Number(stepSeconds) * 1000 } : {}), ...(totalMinutes ? { totalLimitMs: Number(totalMinutes) * 60_000 } : {}) } }); await openRoom(result.id); });
-  const join = (token = inviteToken) => run(async () => { const resolved = await roomApi.resolveInvite(token); await roomApi.join(resolved.room.id, token); await openRoom(resolved.room.id); });
-  const modal = clipboardInvite && <div className="dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center bg-black/55 p-2 backdrop-blur-md sm:items-center sm:p-4" onClick={() => setClipboardInvite(null)} onWheel={event => event.stopPropagation()} onTouchMove={event => event.stopPropagation()}><div role="dialog" aria-modal="true" onClick={event => event.stopPropagation()} className="relative w-full max-w-lg rounded-[1.75rem] border border-slate-700 bg-slate-900 shadow-2xl"><button onClick={() => setClipboardInvite(null)} className="absolute right-4 top-4 z-30 grid h-10 w-10 place-items-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 hover:text-white" aria-label="Close"><X size={18}/></button><div className="max-h-[92dvh] overflow-y-auto px-6 pb-8 pt-16"><p className="font-mono text-xs tracking-widest text-amber-400">INVITATION DETECTED</p><h2 className="mt-2 text-xl font-bold text-white">发现房间邀请</h2><p className="mt-3 text-sm leading-6 text-slate-400">剪贴板第一项是本站的有效房间分享链接。进入后会先显示房间准备界面，只有点击 Ready 且房主开始后才会进入对局。</p><div className="mt-6 flex gap-3"><button onClick={() => { const token = clipboardInvite; setClipboardInvite(null); if (token) join(token); }} className="rounded-lg bg-amber-500 px-4 py-2 font-mono text-xs font-bold text-slate-950">进入准备界面</button><button onClick={() => setClipboardInvite(null)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">暂不进入</button></div></div></div></div>;
-  if (active?.status === 'started') return <><main className="min-h-screen bg-slate-950 p-4 text-slate-200"><div className="mx-auto max-w-6xl"><header className="mb-5 flex items-center justify-between"><button onClick={backToHub} className="inline-flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-amber-400"><ArrowLeft size={16}/>ROOMS</button><div className="flex gap-2"><button onClick={() => void run(() => roomApi.pause(active.id).then(() => openRoom(active.id)))} className="rounded px-3 py-2 text-xs font-bold text-amber-400 hover:bg-slate-800">PAUSE</button><button onClick={() => void run(() => roomApi.close(active.id).then(backToHub))} className="rounded px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-950/30">END ROOM</button><a href="/game/rules" className="inline-flex items-center gap-2 text-xs font-bold text-amber-400"><BookOpen size={16}/>RULES</a></div></header><RoomMatch roomId={active.id} currentUserId={me}/></div></main>{modal}</>;
-  return <><main className="min-h-screen bg-slate-950 p-6 text-slate-200"><section className="mx-auto max-w-5xl"><header className="mb-8 flex items-center justify-between border-b border-slate-800 pb-4"><div><h1 className="font-mono text-2xl font-bold tracking-wider text-amber-500">GAME ROOMS</h1><p className="text-sm text-slate-400">Authenticated, real-time multiplayer Coup.</p></div><div className="flex gap-2"><a href="/game/rules" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-amber-400 hover:bg-slate-800"><BookOpen size={17}/>RULES</a><button onClick={() => void load().catch(reason => setError(reason.message))} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800"><RefreshCw size={17}/></button></div></header>{error && <p className="mb-5 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">{error}</p>}{active ? <RoomLobby room={active} currentUserId={me} busy={busy} onReady={ready => void run(() => roomApi.ready(active.id, ready))} onStart={() => void run(() => roomApi.start(active.id))} onClose={() => void run(() => roomApi.close(active.id).then(backToHub))} onLeave={() => void run(() => roomApi.leave(active.id).then(backToHub))} onKick={userUuid => void run(() => roomApi.kick(active.id, userUuid))} onInvite={() => void run(() => roomApi.invite(active.id).then(invite => navigator.clipboard.writeText(invite.url)))}/> : <><div className="grid gap-5 md:grid-cols-2"><article className="rounded-xl border border-slate-800 bg-slate-900 p-6"><Plus className="mb-3 text-amber-500"/><h2 className="font-mono font-bold text-white">CREATE ROOM</h2><p className="mt-2 text-sm text-slate-400">Choose 3–6 seats, distinct I/II/III AI channels and optional individual clocks.</p><label className="mt-5 block text-xs font-bold text-slate-400">TOTAL SEATS <select value={seatCount} onChange={event => setSeatCount(Number(event.target.value))} className="ml-3 rounded border border-slate-700 bg-slate-950 p-2">{[3,4,5,6].map(count => <option key={count}>{count}</option>)}</select></label><div className="mt-4 flex gap-2">{channels.map(channel => <button key={channel} onClick={() => setSelected(previous => previous.includes(channel) ? previous.filter(item => item !== channel) : previous.length < 3 ? [...previous, channel] : previous)} className={`rounded border px-3 py-2 font-mono text-xs ${selected.includes(channel) ? 'border-amber-500 bg-amber-500/15 text-amber-300' : 'border-slate-700 text-slate-400'}`}>AI {['I','II','III'][Number(channel)-1]}</button>)}</div><div className="mt-4 grid grid-cols-2 gap-3"><input min="10" type="number" value={stepSeconds} onChange={event => setStepSeconds(event.target.value)} placeholder="Step seconds" className="rounded border border-slate-700 bg-slate-950 p-2"/><input min="1" type="number" value={totalMinutes} onChange={event => setTotalMinutes(event.target.value)} placeholder="Total minutes" className="rounded border border-slate-700 bg-slate-950 p-2"/></div><button disabled={busy || seatCount-selected.length<1} onClick={create} className="mt-5 rounded-lg bg-amber-500 px-4 py-2 font-mono text-xs font-bold text-slate-950 disabled:opacity-40">CREATE & TEST AI</button></article><article className="rounded-xl border border-slate-800 bg-slate-900 p-6"><DoorOpen className="mb-3 text-amber-500"/><h2 className="font-mono font-bold text-white">JOIN ROOM</h2><input value={inviteToken} onChange={event => setInviteToken(event.target.value.trim().split('invite=').pop() || '')} placeholder="Invitation link or token" className="mt-5 w-full rounded border border-slate-700 bg-slate-950 p-3"/><button disabled={busy || !inviteToken} onClick={() => join()} className="mt-3 rounded-lg border border-amber-500/40 px-4 py-2 font-mono text-xs font-bold text-amber-300 disabled:opacity-40">JOIN INVITED ROOM</button></article></div><div className="mt-8"><h2 className="mb-3 flex items-center gap-2 font-mono text-sm font-bold tracking-widest text-slate-400"><Users size={16}/>MY ROOMS</h2><div className="grid gap-3 md:grid-cols-2">{rooms.map(room => <button key={room.id} onClick={() => void openRoom(room.id).catch(reason => setError(reason.message))} className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-amber-500/50"><p className="font-mono text-xs text-amber-400">{room.status.toUpperCase()}</p><p className="mt-1 font-bold">{room.memberCount} players · {room.seatCount} seats</p><p className="mt-1 text-xs text-slate-500">AI {room.aiChannels.join(', ') || 'none'}</p></button>)}{rooms.length === 0 && <p className="text-sm text-slate-500">No rooms yet.</p>}</div></div></>}</section></main>{modal}</>;
+
+  useEffect(() => {
+    const refresh = () => { void refreshActive().catch(reason => setError(reason.message)); };
+    const timer = window.setInterval(refresh, 3000);
+    const onVisibility = () => { if (document.visibilityState === 'visible') refresh(); };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisibility); };
+  }, [active?.id, watchToken]);
+
+  const create = () => run(async () => {
+    const result = await roomApi.create({ seatCount, aiChannels: selected, timeControls: { ...(stepSeconds ? { stepLimitMs: Number(stepSeconds) * 1000 } : {}), ...(totalMinutes ? { totalLimitMs: Number(totalMinutes) * 60_000 } : {}) } });
+    await openRoom(result.id);
+  });
+
+  const join = (token = inviteToken) => run(async () => {
+    const resolved = await roomApi.resolveInvite(token);
+    if (resolved.canWatch) return openWatch(resolved.room.id, token);
+    await roomApi.join(resolved.room.id, token);
+    await openRoom(resolved.room.id);
+  });
+
+  const modal = clipboardInvite && <div className="dashboard-theme fixed inset-0 z-[2147483647] flex items-end justify-center bg-black/55 p-2 backdrop-blur-md sm:items-center sm:p-4" onClick={() => setClipboardInvite(null)} onWheel={event => event.stopPropagation()} onTouchMove={event => event.stopPropagation()}><div role="dialog" aria-modal="true" onClick={event => event.stopPropagation()} className="relative w-full max-w-lg rounded-[1.75rem] border border-slate-700 bg-slate-900 shadow-2xl"><button onClick={() => setClipboardInvite(null)} className="absolute right-4 top-4 z-30 grid h-10 w-10 place-items-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 hover:text-white" aria-label="Close"><X size={18}/></button><div className="max-h-[92dvh] overflow-y-auto px-6 pb-8 pt-16"><p className="font-mono text-xs tracking-widest text-amber-400">INVITATION DETECTED</p><h2 className="mt-2 text-xl font-bold text-white">发现房间邀请</h2><p className="mt-3 text-sm leading-6 text-slate-400">剪贴板第一项是本站的有效房间分享链接。进入后会先显示房间准备界面；如果对局已经开始，将以只读观战模式进入。</p><div className="mt-6 flex gap-3"><button onClick={() => { const token = clipboardInvite; setClipboardInvite(null); if (token) join(token); }} className="rounded-lg bg-amber-500 px-4 py-2 font-mono text-xs font-bold text-slate-950">进入房间</button><button onClick={() => setClipboardInvite(null)} className="rounded-lg bg-slate-800 px-4 py-2 text-xs font-bold text-slate-200">暂不进入</button></div></div></div></div>;
+
+  const visibleRooms = useMemo(() => filterRoomSummaries(rooms, roomFilter), [rooms, roomFilter]);
+  const roomIsMatch = active && (active.status === 'started' || (active.spectator && active.status === 'paused'));
+  const isOwner = active?.ownerUuid === me;
+
+  if (roomIsMatch && active) return <><main className="min-h-screen bg-slate-950 p-4 text-slate-200"><div className="mx-auto max-w-6xl"><header className="mb-5 flex items-center justify-between"><button onClick={backToHub} className="inline-flex items-center gap-2 text-xs font-bold text-slate-400 hover:text-amber-400"><ArrowLeft size={16}/>ROOMS</button><div className="flex items-center gap-2">{active.spectator && <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs font-bold text-sky-300">WATCHING</span>}<button onClick={() => void refreshActive().catch(reason => setError(reason.message))} className="rounded p-2 text-slate-400 hover:bg-slate-800" aria-label="Refresh room"><RefreshCw size={16}/></button>{isOwner && active.status === 'started' && <button onClick={() => void run(() => roomApi.pause(active.id).then(() => getActiveDetails(active.id)))} className="rounded px-3 py-2 text-xs font-bold text-amber-400 hover:bg-slate-800">PAUSE</button>}{isOwner && <button onClick={() => void run(() => roomApi.close(active.id).then(backToHub))} className="rounded px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-950/30">END ROOM</button>}<a href="/game/rules" className="inline-flex items-center gap-2 text-xs font-bold text-amber-400"><BookOpen size={16}/>RULES</a></div></header><RoomMatch roomId={active.id} currentUserId={me} spectator={Boolean(active.spectator)} watchToken={watchToken || undefined}/></div></main>{modal}</>;
+
+  if (active) return <><main className="min-h-screen bg-slate-950 p-6 text-slate-200"><section className="mx-auto max-w-5xl"><header className="mb-8 flex items-center justify-between border-b border-slate-800 pb-4"><a href="/" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800 hover:text-amber-400"><ArrowLeft size={16}/>HOME</a><div className="flex gap-2"><a href="/game/rules" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-amber-400 hover:bg-slate-800"><BookOpen size={17}/>RULES</a><button onClick={() => void refreshActive().catch(reason => setError(reason.message))} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800" aria-label="Refresh room"><RefreshCw size={17}/></button></div></header>{error && <p className="mb-5 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">{error}</p>}<RoomLobby room={active} currentUserId={me} busy={busy} onBack={backToHub} onReady={ready => void run(() => roomApi.ready(active.id, ready))} onStart={() => void run(() => roomApi.start(active.id))} onClose={() => void run(() => roomApi.close(active.id).then(backToHub))} onLeave={() => void run(() => roomApi.leave(active.id).then(backToHub))} onKick={userUuid => void run(() => roomApi.kick(active.id, userUuid))} onInvite={() => void run(() => roomApi.invite(active.id).then(invite => navigator.clipboard.writeText(invite.url)))}/></section></main>{modal}</>;
+
+  return <><main className="min-h-screen bg-slate-950 p-6 text-slate-200"><section className="mx-auto max-w-5xl"><header className="mb-8 flex items-center justify-between border-b border-slate-800 pb-4"><a href="/" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-slate-400 hover:bg-slate-800 hover:text-amber-400"><ArrowLeft size={16}/>HOME</a><div><h1 className="font-mono text-2xl font-bold tracking-wider text-amber-500">GAME ROOMS</h1><p className="text-sm text-slate-400">Authenticated, real-time multiplayer Coup.</p></div><div className="flex gap-2"><a href="/game/rules" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold text-amber-400 hover:bg-slate-800"><BookOpen size={17}/>RULES</a><button onClick={() => void refreshActive().catch(reason => setError(reason.message))} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800" aria-label="Refresh rooms"><RefreshCw size={17}/></button></div></header>{error && <p className="mb-5 rounded-lg border border-red-800 bg-red-950/30 p-3 text-sm text-red-200">{error}</p>}<div className="grid gap-5 md:grid-cols-2"><article className="rounded-xl border border-slate-800 bg-slate-900 p-6"><Plus className="mb-3 text-amber-500"/><h2 className="font-mono font-bold text-white">CREATE ROOM</h2><p className="mt-2 text-sm text-slate-400">Choose 3–6 seats, distinct I/II/III AI channels and optional individual clocks.</p><label className="mt-5 block text-xs font-bold text-slate-400">TOTAL SEATS <select value={seatCount} onChange={event => setSeatCount(Number(event.target.value))} className="ml-3 rounded border border-slate-700 bg-slate-950 p-2">{[3,4,5,6].map(count => <option key={count}>{count}</option>)}</select></label><div className="mt-4 flex gap-2">{channels.map(channel => <button key={channel} onClick={() => setSelected(previous => previous.includes(channel) ? previous.filter(item => item !== channel) : previous.length < 3 ? [...previous, channel] : previous)} className={`rounded border px-3 py-2 font-mono text-xs ${selected.includes(channel) ? 'border-amber-500 bg-amber-500/15 text-amber-300' : 'border-slate-700 text-slate-400'}`}>AI {roomAiLabels([channel])[0]}</button>)}</div><div className="mt-4 grid grid-cols-2 gap-3"><input min="10" type="number" value={stepSeconds} onChange={event => setStepSeconds(event.target.value)} placeholder="Step seconds" className="rounded border border-slate-700 bg-slate-950 p-2"/><input min="1" type="number" value={totalMinutes} onChange={event => setTotalMinutes(event.target.value)} placeholder="Total minutes" className="rounded border border-slate-700 bg-slate-950 p-2"/></div><button disabled={busy || seatCount-selected.length<1} onClick={create} className="mt-5 rounded-lg bg-amber-500 px-4 py-2 font-mono text-xs font-bold text-slate-950 disabled:opacity-40">CREATE & TEST AI</button></article><article className="rounded-xl border border-slate-800 bg-slate-900 p-6"><DoorOpen className="mb-3 text-amber-500"/><h2 className="font-mono font-bold text-white">JOIN ROOM</h2><input value={inviteToken} onChange={event => setInviteToken(event.target.value.trim().split('invite=').pop() || '')} placeholder="Invitation link or token" className="mt-5 w-full rounded border border-slate-700 bg-slate-950 p-3"/><button disabled={busy || !inviteToken} onClick={() => join()} className="mt-3 rounded-lg border border-amber-500/40 px-4 py-2 font-mono text-xs font-bold text-amber-300 disabled:opacity-40">JOIN INVITED ROOM</button></article></div><div className="mt-8"><div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h2 className="flex items-center gap-2 font-mono text-sm font-bold tracking-widest text-slate-400"><Users size={16}/>MY ROOMS</h2><label className="inline-flex items-center gap-2 text-xs font-bold text-slate-400"><Filter size={14}/><span>SHOW</span><select value={roomFilter} onChange={event => setRoomFilter(event.target.value as RoomFilter)} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200"><option value="active">ACTIVE</option><option value="all">ALL ROOMS</option></select></label></div><div className="grid gap-3 md:grid-cols-2">{visibleRooms.map(room => { const status = roomStatusLabel(room.status); return <button key={room.id} onClick={() => void openRoom(room.id).catch(reason => setError(reason.message))} className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-left hover:border-amber-500/50"><span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold ${status.className}`}>{status.text}</span><p className="mt-2 font-bold">{room.memberCount} players · {room.seatCount} seats</p><p className="mt-1 text-xs text-slate-500">AI {room.aiNames.join(', ') || 'none'}</p></button>; })}{visibleRooms.length === 0 && <p className="text-sm text-slate-500">No rooms in this filter.</p>}</div></div></section></main>{modal}</>;
 }

@@ -176,6 +176,24 @@ export default {
       const getRoom = async (id: string) => await env.DB.prepare('SELECT * FROM rooms WHERE id = ?').bind(id).first() as any;
       const getMember = async (id: string, userId: string) => await env.DB.prepare('SELECT * FROM room_members WHERE room_id = ? AND user_uuid = ? AND left_at IS NULL').bind(id, userId).first() as any;
       const activeMembers = async (id: string) => (await env.DB.prepare('SELECT * FROM room_members WHERE room_id = ? AND left_at IS NULL ORDER BY seat_index').bind(id).all() as any).results as any[];
+      const roomDetails = (room: any, members: any[], member: any | null, spectator = false) => ({
+        id: room.id,
+        ownerUuid: room.owner_uuid,
+        status: room.status,
+        seatCount: room.seat_count,
+        aiChannels: JSON.parse(room.ai_channels_json),
+        aiNames: (JSON.parse(room.ai_channels_json) as string[]).map(channel => roomAiName(channel as any)),
+        timeControls: JSON.parse(room.time_controls_json),
+        me: spectator || !member ? null : { ready: Boolean(member.is_ready) },
+        members: members.map(item => ({ uuid: item.user_uuid, name: item.display_name, seatIndex: item.seat_index, ready: Boolean(item.is_ready) })),
+        spectator,
+      });
+      const spectatorInvite = async (id: string, token: string) => {
+        const invite = await env.DB.prepare('SELECT * FROM room_invites WHERE room_id = ? AND token_hash = ? AND revoked_at IS NULL').bind(id, await hashInvite(token)).first() as any;
+        const room = await getRoom(id);
+        if (!invite || !room || invite.expires_at <= Date.now() || (room.status !== 'started' && room.status !== 'paused')) throw new HttpError(403, 'Spectator invitation is unavailable');
+        return room;
+      };
       const requireRoomMember = async (id: string, user: NonNullable<typeof session>) => {
         const room = await getRoom(id); if (!room) throw new HttpError(404, 'Room not found');
         const member = await getMember(id, user.uuid); if (!member) throw new HttpError(403, 'Room membership required');
@@ -217,6 +235,7 @@ export default {
           status: room.status,
           seatCount: room.seat_count,
           aiChannels: JSON.parse(room.ai_channels_json),
+          aiNames: (JSON.parse(room.ai_channels_json) as string[]).map(channel => roomAiName(channel as any)),
           timeControls: JSON.parse(room.time_controls_json),
           isReady: Boolean(room.is_ready),
           memberCount: (await activeMembers(room.id)).length,
@@ -226,9 +245,38 @@ export default {
       if (url.pathname.startsWith('/api/rooms/invite/') && request.method === 'GET') {
         const user = requireSession(); await ensureRooms(); const token = decodeURIComponent(url.pathname.slice('/api/rooms/invite/'.length));
         const invite = await env.DB.prepare('SELECT * FROM room_invites WHERE token_hash = ? AND revoked_at IS NULL').bind(await hashInvite(token)).first() as any;
-        if (!invite || invite.expires_at <= Date.now() || invite.use_count >= invite.max_uses) throw new HttpError(404, 'Invitation is unavailable');
-        const room = await getRoom(invite.room_id); if (!room || room.status !== 'open') throw new HttpError(409, 'Room is not accepting members');
-        return json({ room: { id: room.id, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: !(await getMember(room.id, user.uuid)) });
+        if (!invite || invite.expires_at <= Date.now()) throw new HttpError(404, 'Invitation is unavailable');
+        const room = await getRoom(invite.room_id); if (!room) throw new HttpError(404, 'Room not found');
+        if (room.status === 'started' || room.status === 'paused') return json({ room: { id: room.id, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: false, canWatch: true });
+        if (room.status !== 'open') throw new HttpError(409, 'Room is not accepting members');
+        if (invite.use_count >= invite.max_uses) throw new HttpError(404, 'Invitation is unavailable');
+        return json({ room: { id: room.id, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: !(await getMember(room.id, user.uuid)), canWatch: false });
+      }
+
+      if (url.pathname === '/api/admin/rooms' && request.method === 'GET') {
+        requireAdmin(); await ensureRooms();
+        const { results } = await env.DB.prepare('SELECT * FROM rooms WHERE status != ? ORDER BY updated_at DESC').bind('closed').all() as any;
+        return json(await Promise.all(results.map(async (room: any) => {
+          const members = await activeMembers(room.id);
+          return { ...roomDetails(room, members, null), ownerName: members.find(member => member.user_uuid === room.owner_uuid)?.display_name || room.owner_uuid, memberNames: members.map(member => member.display_name) };
+        })));
+      }
+
+      if (url.pathname.startsWith('/api/admin/rooms/') && url.pathname.endsWith('/watch') && request.method === 'GET') {
+        requireAdmin(); await ensureRooms(); const id = decodeURIComponent(url.pathname.slice('/api/admin/rooms/'.length, -'/watch'.length)); const room = await getRoom(id);
+        if (!room || (room.status !== 'started' && room.status !== 'paused')) throw new HttpError(409, 'Room is not active');
+        return json(roomDetails(room, await activeMembers(id), null, true));
+      }
+
+      if (url.pathname.startsWith('/api/admin/rooms/') && url.pathname.endsWith('/close') && request.method === 'POST') {
+        requireAdmin(); await ensureRooms(); const id = decodeURIComponent(url.pathname.slice('/api/admin/rooms/'.length, -'/close'.length)); const room = await getRoom(id);
+        if (!room) throw new HttpError(404, 'Room not found');
+        if ((room.status === 'started' || room.status === 'paused') && env.ROOM_GAME) {
+          const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
+          await stub.fetch(new Request('https://room.internal/close', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Room-Internal': '1', 'X-Room-Actor': 'admin' }, body: JSON.stringify({ type: 'close' }) }));
+        }
+        await env.DB.prepare('UPDATE rooms SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?').bind('closed', Date.now(), Date.now(), id).run();
+        return json({ status: 'closed' });
       }
 
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/join') && request.method === 'POST') {
@@ -315,16 +363,25 @@ export default {
         if (!result.meta?.changes) throw new HttpError(404, 'Member not found'); return json({ removed: true });
       }
 
+      if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/watch') && request.method === 'GET') {
+        const user = requireSession(); await ensureRooms(); const id = roomIdFromPath('/watch'); if (!id) throw new HttpError(404, 'Room not found');
+        const room = await spectatorInvite(id, url.searchParams.get('invite') || '');
+        return json(roomDetails(room, await activeMembers(id), null, true));
+      }
+
       if (url.pathname.startsWith('/api/rooms/') && url.pathname.endsWith('/socket') && request.method === 'GET') {
-        const user = requireSession(); const id = roomIdFromPath('/socket'); if (!id) throw new HttpError(404, 'Room not found'); const { room } = await requireRoomMember(id, user);
+        const user = requireSession(); const id = roomIdFromPath('/socket'); if (!id) throw new HttpError(404, 'Room not found'); const room = await getRoom(id); if (!room) throw new HttpError(404, 'Room not found');
+        const adminWatch = url.searchParams.get('admin') === '1'; const inviteToken = url.searchParams.get('invite');
+        let spectator = false;
+        if (adminWatch) { requireAdmin(); spectator = true; }
+        else if (!(await getMember(id, user.uuid))) { await spectatorInvite(id, inviteToken || ''); spectator = true; }
         if (room.status !== 'started' && room.status !== 'paused') throw new HttpError(409, 'Room has not started'); if (!env.ROOM_GAME) throw new HttpError(503, 'Realtime room service is unavailable');
         const stub = env.ROOM_GAME.get(env.ROOM_GAME.idFromName(room.durable_object_id));
-        return stub.fetch(new Request('https://room.internal/socket', { headers: { Upgrade: 'websocket', 'X-Room-Actor': user.uuid } }));
+        return stub.fetch(new Request('https://room.internal/socket', { headers: { Upgrade: 'websocket', 'X-Room-Actor': spectator ? '' : user.uuid, 'X-Room-Spectator': spectator ? '1' : '0' } }));
       }
 
       if (url.pathname.startsWith('/api/rooms/') && request.method === 'GET') {
-        const user = requireSession(); await ensureRooms(); const id = roomIdFromPath(); if (!id || id.includes('/')) throw new HttpError(404, 'Room not found'); const { room, member } = await requireRoomMember(id, user); const members = await activeMembers(id);
-        return json({ id: room.id, ownerUuid: room.owner_uuid, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json), aiNames: (JSON.parse(room.ai_channels_json) as string[]).map(channel => roomAiName(channel as any)), timeControls: JSON.parse(room.time_controls_json), me: { ready: Boolean(member.is_ready) }, members: members.map(item => ({ uuid: item.user_uuid, name: item.display_name, seatIndex: item.seat_index, ready: Boolean(item.is_ready) })) });
+        const user = requireSession(); await ensureRooms(); const id = roomIdFromPath(); if (!id || id.includes('/')) throw new HttpError(404, 'Room not found'); const { room, member } = await requireRoomMember(id, user); return json(roomDetails(room, await activeMembers(id), member));
       }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
         return json({ success: true }, 200, { 'Set-Cookie': 'coup_session=; Path=/; Domain=.aryuki.com; Max-Age=0;' });

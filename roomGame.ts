@@ -56,7 +56,7 @@ export class RoomGame {
 
   async fetch(request: Request) {
     const actorId = request.headers.get('X-Room-Actor');
-    if (request.headers.get('Upgrade') === 'websocket') return this.connect(actorId);
+    if (request.headers.get('Upgrade') === 'websocket') return this.connect(actorId, request.headers.get('X-Room-Spectator') === '1');
     const body = await request.json() as any;
     if (body.type === 'initialize') {
       if (request.headers.get('X-Room-Internal') !== '1' || !body.room) return json({ error: 'Forbidden' }, 403);
@@ -107,16 +107,17 @@ export class RoomGame {
     await this.maybeRunAi(updated);
   }
 
-  private async connect(actorId: string | null) {
+  private async connect(actorId: string | null, spectator = false) {
     const room = await this.load();
-    if (!room || !actorId || !room.state.players.some(player => player.id === actorId && !player.isAI)) return new Response('Forbidden', { status: 403 });
+    if (!room || (spectator ? !room.state.players.length : !actorId || !room.state.players.some(player => player.id === actorId && !player.isAI))) return new Response('Forbidden', { status: 403 });
     const pair = new (globalThis as any).WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     server.accept();
-    this.sockets.set(server, actorId);
-    server.send(JSON.stringify({ type: 'state', ...this.view(room, actorId) }));
-    server.addEventListener('message', event => { void this.onSocketMessage(server, actorId, event.data); });
+    const viewerId = spectator ? '__spectator__' : actorId!;
+    this.sockets.set(server, viewerId);
+    server.send(JSON.stringify({ type: 'state', ...this.view(room, viewerId) }));
+    if (!spectator) server.addEventListener('message', event => { void this.onSocketMessage(server, actorId!, event.data); });
     server.addEventListener('close', () => this.sockets.delete(server));
     server.addEventListener('error', () => this.sockets.delete(server));
     return new Response(null, { status: 101, webSocket: client } as any);
