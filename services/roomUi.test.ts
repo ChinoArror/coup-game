@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterRoomSummaries, roomAiLabels, roomStatusLabel } from './roomUi';
+import { filterRoomSummaries, roomAiLabels, roomMobileClasses, roomStatusLabel } from './roomUi';
 
 const rooms = [
   { id: 'open', status: 'open', seatCount: 3, aiChannels: ['1'], timeControls: {}, isReady: false, memberCount: 1 },
@@ -19,5 +19,11 @@ describe('room list presentation', () => {
     expect(roomStatusLabel('paused')).toMatchObject({ text: 'PAUSED', className: expect.stringContaining('amber') });
     expect(roomStatusLabel('closed')).toMatchObject({ text: 'CLOSED', className: expect.stringContaining('slate') });
     expect(roomAiLabels(['1', '2', '3'])).toEqual(['I', 'II', 'III']);
+  });
+
+  it('keeps room controls usable in a narrow viewport', () => {
+    expect(roomMobileClasses.actionGrid).toContain('grid-cols-2');
+    expect(roomMobileClasses.actionGrid).toContain('md:grid-cols-4');
+    expect(roomMobileClasses.touchTarget).toContain('min-h-11');
   });
 });

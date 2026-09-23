@@ -4,6 +4,11 @@ export type RoomFilter = 'active' | 'all';
 
 const AI_LABELS: Record<string, string> = { '1': 'I', '2': 'II', '3': 'III' };
 
+export const roomMobileClasses = {
+  actionGrid: 'grid grid-cols-2 gap-3 md:grid-cols-4',
+  touchTarget: 'min-h-11',
+} as const;
+
 export const filterRoomSummaries = <T extends Pick<RoomSummary, 'status'>>(rooms: readonly T[], filter: RoomFilter) =>
   filter === 'all' ? [...rooms] : rooms.filter(room => room.status !== 'closed');
 

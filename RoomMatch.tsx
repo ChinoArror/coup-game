@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CircleDollarSign, Shield } from 'lucide-react';
 import { ActionType, CardType, GamePhase, type GameState, type Player } from './types';
+import { roomMobileClasses } from './services/roomUi';
 
 type RoomWireState = {
   type: 'state';
@@ -31,7 +32,7 @@ function PlayerPanel({ player, currentTurn, target, onTarget }: { key?: string; 
   return (
     <div
       onClick={target ? onTarget : undefined}
-      className={`relative rounded-xl border-2 p-4 transition-all ${
+      className={`relative rounded-xl border-2 p-3 transition-all sm:p-4 ${
         target
           ? 'cursor-pointer border-amber-500 bg-amber-900/20 shadow-[0_0_20px_rgba(245,158,11,0.4)]'
           : currentTurn
@@ -71,7 +72,7 @@ function ActionButton({ label, sub, onClick, color = 'slate' }: { label: string;
     blue: 'bg-blue-900/30 hover:bg-blue-900/50 border-blue-500/50 text-blue-200',
   };
   return (
-    <button onClick={onClick} className={`relative flex flex-col items-start justify-center rounded-lg border p-3 transition-all ${colors[color]}`}>
+    <button onClick={onClick} className={`${roomMobileClasses.touchTarget} relative flex w-full flex-col items-start justify-center rounded-lg border p-3 text-left transition-all ${colors[color]}`}>
       <span className="text-sm font-bold">{label}</span>
       {sub && <span className="text-[10px] opacity-70">{sub}</span>}
     </button>
@@ -158,9 +159,9 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
 
   return (
     <div className="min-h-screen bg-slate-950 font-sans text-slate-200 selection:bg-amber-500/30">
-      <main className="mx-auto grid max-w-5xl grid-cols-1 gap-6 p-4 md:p-6 lg:grid-cols-12">
+      <main className="mx-auto grid max-w-5xl grid-cols-1 gap-5 p-3 sm:gap-6 sm:p-4 md:p-6 lg:grid-cols-12">
         <div className="flex flex-col gap-6 lg:col-span-8">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-2 sm:gap-4">
             {opponents.map(player => (
               <PlayerPanel
                 key={player.id}
@@ -172,13 +173,13 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
             ))}
           </div>
 
-          <div className="relative flex min-h-[200px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center">
+          <div className="relative flex min-h-[200px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 p-5 text-center sm:p-8">
             {state.phase === GamePhase.GAME_OVER ? (
               <div className="animate-bounce text-2xl font-bold uppercase tracking-widest text-amber-500">{status}</div>
             ) : (
               <>
                 <div className="mb-2 font-mono text-sm uppercase tracking-widest text-slate-400">Current Protocol</div>
-                <div className="mb-4 text-2xl font-bold text-white md:text-3xl">{status}</div>
+                <div className="mb-4 text-xl font-bold text-white sm:text-2xl md:text-3xl">{status}</div>
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
                   {state.waitingForResponseFrom.map(id => <div key={id} className="animate-pulse rounded-full border border-slate-700 bg-slate-800 px-3 py-1 font-mono text-xs tracking-widest text-slate-300">Waiting for {state.players.find(player => player.id === id)?.name}</div>)}
                 </div>
@@ -186,8 +187,8 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
             )}
           </div>
 
-          <div className={`rounded-2xl border-2 p-6 transition-all ${isMyTurn ? 'border-amber-500 bg-slate-900/80' : 'border-slate-800 bg-slate-900'}`}>
-            <div className="mb-6 flex items-end justify-between">
+          <div className={`rounded-2xl border-2 p-4 transition-all sm:p-6 ${isMyTurn ? 'border-amber-500 bg-slate-900/80' : 'border-slate-800 bg-slate-900'}`}>
+            <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
               <div>
                 <h2 className="mb-1 text-xl font-bold text-white">{spectator ? 'SPECTATOR VIEW' : boardPlayer.name}</h2>
                 <div className="flex items-center gap-2 font-mono text-lg text-amber-400"><CircleDollarSign size={18} /> {spectator ? '—' : `${boardPlayer.coins} Credits`}</div>
@@ -205,7 +206,7 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
               ))}
             </div>
 
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className={roomMobileClasses.actionGrid}>
               {isMyTurn && me && !boardPlayer.isEliminated && (
                 <>
                   {!mustCoup && (
@@ -219,15 +220,15 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
                     </>
                   )}
                   {boardPlayer.coins >= 7 && <ActionButton label="Coup (7)" sub="Unblockable" color="red" onClick={() => setTargetAction(ActionType.COUP)} />}
-                  {targetAction && <button onClick={() => setTargetAction(null)} className="col-span-2 mt-2 rounded-lg border border-slate-600 bg-slate-800 py-2 font-bold uppercase tracking-widest text-white md:col-span-4">Cancel Target Selection</button>}
+                  {targetAction && <button onClick={() => setTargetAction(null)} className={`${roomMobileClasses.touchTarget} col-span-2 mt-2 rounded-lg border border-slate-600 bg-slate-800 py-2 font-bold uppercase tracking-widest text-white md:col-span-4`}>Cancel Target Selection</button>}
                 </>
               )}
 
               {canRespond && (
                 <>
-                  {canChallenge && <button onClick={() => send({ type: 'challenge' })} className="col-span-2 flex flex-col items-center rounded-lg border border-red-500 bg-red-600 py-3 font-bold text-white shadow-lg shadow-red-900/20"><span>CHALLENGE!</span><span className="text-xs font-normal opacity-80">They are lying!</span></button>}
+                  {canChallenge && <button onClick={() => send({ type: 'challenge' })} className="col-span-2 flex min-h-12 flex-col items-center justify-center rounded-lg border border-red-500 bg-red-600 py-3 font-bold text-white shadow-lg shadow-red-900/20"><span>CHALLENGE!</span><span className="text-xs font-normal opacity-80">They are lying!</span></button>}
                   {(canBlockDuke || canBlockContessa || canBlockCaptain || canBlockAmbassador) && (
-                    <div className="col-span-4 my-2 grid grid-cols-2 gap-2 border-b border-t border-slate-800 py-2">
+                    <div className="col-span-2 my-2 grid grid-cols-2 gap-2 border-b border-t border-slate-800 py-2 md:col-span-4">
                       <div className="col-span-2 mb-1 text-center text-xs uppercase tracking-widest text-slate-400">Counter Measures</div>
                       {canBlockDuke && <ActionButton label="Block with Duke" color="purple" onClick={() => send({ type: 'block', cardClaim: CardType.DUKE })} />}
                       {canBlockContessa && <ActionButton label="Block with Contessa" color="red" onClick={() => send({ type: 'block', cardClaim: CardType.CONTESSA })} />}
@@ -235,14 +236,14 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
                       {canBlockAmbassador && <ActionButton label="Block with Ambassador" color="blue" onClick={() => send({ type: 'block', cardClaim: CardType.AMBASSADOR })} />}
                     </div>
                   )}
-                  <button onClick={() => send({ type: 'pass' })} className="col-span-2 rounded-lg border border-slate-600 bg-slate-700 py-3 font-bold text-white">PASS / ALLOW</button>
+                  <button onClick={() => send({ type: 'pass' })} className="col-span-2 min-h-12 rounded-lg border border-slate-600 bg-slate-700 py-3 font-bold text-white">PASS / ALLOW</button>
                 </>
               )}
             </div>
           </div>
         </div>
 
-        <aside className="flex h-full max-h-[700px] flex-col gap-4 lg:col-span-4">
+        <aside className="flex h-full max-h-[520px] flex-col gap-4 lg:max-h-[700px] lg:col-span-4">
           <div className="flex min-h-[360px] flex-1 flex-col rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="mb-4 border-b border-slate-800 pb-2 font-mono text-xs uppercase tracking-widest text-slate-400">Mission Log</h3>
             <div className="flex-1 space-y-3 overflow-y-auto pr-2">

@@ -109,15 +109,14 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 text-slate-200 md:p-8">
-      <header className="mx-auto mb-8 flex max-w-5xl items-center justify-between gap-4 border-b border-slate-800 pb-5">
+      <header className="mx-auto mb-8 flex max-w-5xl flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-5 sm:items-center">
         <div className="flex items-center gap-3">
           <ShieldCheck className="text-amber-500" size={30} />
           <div>
             <h1 className="font-mono text-2xl font-bold tracking-widest text-amber-500">ADMINDASH</h1>
-            <p className="text-sm text-slate-400">AI channel routing and metered provider checks</p>
           </div>
         </div>
-        <button onClick={() => onNavigate('game')} className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-800">
+        <button onClick={() => onNavigate('game')} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-800">
           <ArrowLeft size={16} /> Game
         </button>
       </header>
@@ -126,7 +125,7 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
         <section className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
           <div className="mb-5 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Users className="text-amber-500" size={20} /><h2 className="font-mono font-bold tracking-wide">ACTIVE ROOMS</h2></div><button onClick={() => void loadRooms().catch(error => setNotice(error.message))} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800" aria-label="Refresh active rooms"><RefreshCw size={17} /></button></div>
           <div className="grid gap-3 md:grid-cols-2">
-            {activeRooms.map(room => { const status = roomStatusLabel(room.status); return <article key={room.id} className="rounded-xl border border-slate-800 bg-slate-950 p-4"><div className="flex items-start justify-between gap-3"><div><span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold ${status.className}`}>{status.text}</span><p className="mt-2 font-mono text-xs text-slate-500">ROOM {room.id.slice(0, 8).toUpperCase()}</p></div><p className="text-xs text-slate-500">{room.members.length + room.aiNames.length}/{room.seatCount} seats</p></div><p className="mt-2 text-sm text-slate-300">Owner: <b className="text-white">{room.ownerName}</b></p><p className="mt-1 text-xs text-slate-500">Players: {room.members.map(member => member.name).join(', ') || 'none'} · AI {room.aiNames.join(', ') || 'none'}</p><div className="mt-4 flex gap-2"><button disabled={room.status === 'open'} onClick={() => { window.location.href = `/game/${encodeURIComponent(room.id)}?watch=admin`; }} className="inline-flex items-center gap-2 rounded-lg border border-sky-500/40 px-3 py-2 text-xs font-bold text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"><Eye size={15} /> WATCH</button><button disabled={roomBusy === room.id} onClick={() => void closeRoom(room.id)} className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 px-3 py-2 text-xs font-bold text-red-300 disabled:opacity-40"><Power size={15} /> {roomBusy === room.id ? 'CLOSING…' : 'CLOSE'}</button></div></article>; })}
+            {activeRooms.map(room => { const status = roomStatusLabel(room.status); return <article key={room.id} className="rounded-xl border border-slate-800 bg-slate-950 p-4"><div className="flex items-start justify-between gap-3"><div><span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold ${status.className}`}>{status.text}</span><p className="mt-2 font-mono text-xs text-slate-500">ROOM {room.id.slice(0, 8).toUpperCase()}</p></div><p className="text-xs text-slate-500">{room.members.length + room.aiNames.length}/{room.seatCount} seats</p></div><p className="mt-2 text-sm text-slate-300">Owner: <b className="text-white">{room.ownerName}</b></p><p className="mt-1 text-xs text-slate-500">Players: {room.members.map(member => member.name).join(', ') || 'none'} · AI {room.aiNames.join(', ') || 'none'}</p><div className="mt-4 grid grid-cols-2 gap-2 sm:flex"><button disabled={room.status === 'open'} onClick={() => { window.location.href = `/game/${encodeURIComponent(room.id)}?watch=admin`; }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-sky-500/40 px-3 text-xs font-bold text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"><Eye size={15} /> WATCH</button><button disabled={roomBusy === room.id} onClick={() => void closeRoom(room.id)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-500/40 px-3 text-xs font-bold text-red-300 disabled:opacity-40"><Power size={15} /> {roomBusy === room.id ? 'CLOSING…' : 'CLOSE'}</button></div></article>; })}
             {activeRooms.length === 0 && <p className="text-sm text-slate-500">No active rooms.</p>}
           </div>
         </section>
@@ -138,10 +137,10 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
               <div key={player.slot} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
                 <label className="mb-3 block font-mono font-bold text-slate-200">{player.label}</label>
                 <div className="flex flex-col gap-3 sm:flex-row">
-                  <select value={selection[player.slot] || player.fallback} onChange={event => setSelection(current => ({ ...current, [player.slot]: event.target.value }))} className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500">
+                  <select value={selection[player.slot] || player.fallback} onChange={event => setSelection(current => ({ ...current, [player.slot]: event.target.value }))} className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500">
                     {channels.map(channel => <option key={channel.id} value={channel.id}>{channel.label}</option>)}
                   </select>
-                  <button onClick={() => savePlayer(player.slot)} className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-amber-400">
+                  <button onClick={() => savePlayer(player.slot)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-amber-400">
                     <Save size={16} /> Save
                   </button>
                 </div>
@@ -152,12 +151,11 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
           <div className="mb-5 flex items-center gap-2"><FlaskConical className="text-amber-500" size={20} /><h2 className="font-mono font-bold tracking-wide">CHANNEL HEALTH CHECK</h2></div>
-          <p className="mb-4 text-sm leading-6 text-slate-400">Each test sends a minimal model request through the same quota pre-check and token reporting path used by a game.</p>
           <div className="space-y-3">
             {channels.map(channel => (
-              <div key={channel.id} className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
+              <div key={channel.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
                 <span className="font-mono text-sm font-bold">{channel.label}</span>
-                <button disabled={testing !== null} onClick={() => testChannel(channel.id)} className="inline-flex items-center gap-2 rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-bold text-amber-400 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50">
+                <button disabled={testing !== null} onClick={() => testChannel(channel.id)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-bold text-amber-400 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50">
                   <FlaskConical size={16} /> {testing === channel.id ? 'Testing…' : 'Test'}
                 </button>
               </div>
