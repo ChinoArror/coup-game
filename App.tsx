@@ -238,25 +238,25 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-amber-500/30">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-md p-4 sticky top-0 z-50 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <Shield className="text-amber-500 w-6 h-6" />
-          <h1 className="text-lg font-bold tracking-wider text-amber-500 font-mono">COUP: SHADOW PROTOCOL</h1>
+      <header className="sticky top-0 z-50 flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/50 p-3 backdrop-blur-md sm:p-4">
+        <div className="flex shrink-0 items-center gap-2">
+          <Shield className="h-5 w-5 text-amber-500 sm:h-6 sm:w-6" />
+          <h1 className="font-mono text-lg font-bold tracking-wider text-amber-500">COUP</h1>
         </div>
-        <div className="flex gap-2 items-center">
-          <a href="/game" className="inline-flex items-center gap-2 rounded-lg px-3 py-2 font-mono text-xs font-bold tracking-wider text-slate-300 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Multiplayer rooms">
-            <Users size={18} /> ROOMS
+        <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 sm:gap-2">
+          <a href="/game" className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-2 font-mono text-xs font-bold tracking-wider text-slate-300 transition-colors hover:bg-slate-800 hover:text-amber-500 sm:px-3" title="Multiplayer rooms">
+            <Users size={18} /><span className="hidden sm:inline">ROOMS</span>
           </a>
           {canAccessAdminDash(role) && (
-            <button onClick={() => onNavigate('admin')} className="inline-flex items-center gap-2 rounded-lg px-3 py-2 font-mono text-xs font-bold tracking-wider text-amber-500 transition-colors hover:bg-slate-800" title="AdminDash">
+            <button onClick={() => onNavigate('admin')} className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-2 font-mono text-xs font-bold tracking-wider text-amber-500 transition-colors hover:bg-slate-800 sm:px-3" title="AdminDash">
               <LayoutDashboard size={18} />
-              ADMINDASH
+              <span className="hidden sm:inline">ADMINDASH</span>
             </button>
           )}
-          <button onClick={() => onNavigate('history')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Match History"><HistoryIcon size={18} /></button>
-          <button onClick={() => onNavigate('leaderboard')} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
-          <button onClick={resetGame} className="p-2 hover:bg-slate-800 rounded-full transition-colors text-slate-400 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>
-          <button onClick={doLogout} className="p-2 hover:bg-red-900/50 rounded-full transition-colors text-slate-400 hover:text-red-500 ml-2" title="Logout"><LogOut size={18} /></button>
+          <button onClick={() => onNavigate('history')} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Match History"><HistoryIcon size={18} /></button>
+          <button onClick={() => onNavigate('leaderboard')} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
+          <button onClick={resetGame} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>
+          <button onClick={doLogout} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-red-900/50 hover:text-red-500 sm:ml-2" title="Logout"><LogOut size={18} /></button>
         </div>
       </header>
 

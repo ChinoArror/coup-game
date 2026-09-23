@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterRoomSummaries, roomAiLabels, roomMobileClasses, roomStatusLabel } from './roomUi';
+import { filterRoomSummaries, normalizeInviteToken, roomAiLabels, roomMobileClasses, roomStatusLabel } from './roomUi';
 
 const rooms = [
   { id: 'open', status: 'open', seatCount: 3, aiChannels: ['1'], timeControls: {}, isReady: false, memberCount: 1 },
@@ -25,5 +25,10 @@ describe('room list presentation', () => {
     expect(roomMobileClasses.actionGrid).toContain('grid-cols-2');
     expect(roomMobileClasses.actionGrid).toContain('md:grid-cols-4');
     expect(roomMobileClasses.touchTarget).toContain('min-h-11');
+  });
+
+  it('accepts either a bare invitation token or a complete invitation link', () => {
+    expect(normalizeInviteToken('  0123456789abcdef0123456789abcdef  ')).toBe('0123456789abcdef0123456789abcdef');
+    expect(normalizeInviteToken('https://coup.aryuki.com/game?invite=0123456789abcdef0123456789abcdef&source=share')).toBe('0123456789abcdef0123456789abcdef');
   });
 });

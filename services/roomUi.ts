@@ -9,6 +9,18 @@ export const roomMobileClasses = {
   touchTarget: 'min-h-11',
 } as const;
 
+export const normalizeInviteToken = (value: string) => {
+  const raw = value.trim();
+  if (!raw) return '';
+  try {
+    const invite = new URL(raw).searchParams.get('invite');
+    if (invite) return invite.trim();
+  } catch {
+    // A bare token is not a URL and remains valid input.
+  }
+  return new URLSearchParams(raw.startsWith('?') ? raw.slice(1) : raw).get('invite')?.trim() || raw;
+};
+
 export const filterRoomSummaries = <T extends Pick<RoomSummary, 'status'>>(rooms: readonly T[], filter: RoomFilter) =>
   filter === 'all' ? [...rooms] : rooms.filter(room => room.status !== 'closed');
 
