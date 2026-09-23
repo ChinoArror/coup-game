@@ -55,8 +55,9 @@ export default function GameHub({ roomId }: { roomId?: string }) {
   };
 
   const refreshActive = async () => {
+    const openedRoomId = active?.id;
     await load();
-    if (active?.id) setActive(await getActiveDetails(active.id));
+    if (openedRoomId && window.location.pathname !== '/game') setActive(await getActiveDetails(openedRoomId));
   };
 
   const run = async (operation: () => Promise<unknown>) => {
