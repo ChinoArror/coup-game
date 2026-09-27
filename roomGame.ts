@@ -1,10 +1,12 @@
 import { ActionType, CardType, GamePhase, type GameState } from './types';
-import { callAIChannel } from './services/aiGateway';
+import { AIChannelError, callAIChannel } from './services/aiGateway';
 import { createAIDecisionRequest } from './services/aiPrompt';
+import { availableRoomAiChannels, isRoomAiChannel } from './services/rooms';
 import { projectRoomState } from './services/roomState';
 import { handleBlock, handleChallenge, handleLoseCard, handlePass, handlePlayerAction } from './utils/gameEngine';
 
 type RoomConfig = { stepLimitMs?: number; totalLimitMs?: number };
+type RoomAiFailure = { playerId: string; channelId: string; status: number; message: string; failedAt: number };
 type StoredRoom = {
   roomId: string;
   owner: { uuid: string; isAdmin: boolean };
@@ -15,6 +17,7 @@ type StoredRoom = {
   phaseStartedAt: number;
   revision: number;
   activity: Record<string, number>;
+  aiFailure?: RoomAiFailure;
   pausedAt?: number;
   endedAt?: number;
 };
@@ -71,6 +74,28 @@ export class RoomGame {
     }
     const room = await this.load();
     if (!room) return json({ error: 'Room has not started' }, 409);
+    if (body.type === 'retry-ai' || body.type === 'switch-ai') {
+      if (request.headers.get('X-Room-Internal') !== '1' || actorId !== room.owner.uuid) return json({ error: 'Forbidden' }, 403);
+      if (!room.aiFailure || room.pausedAt || room.state.phase === GamePhase.GAME_OVER) return json({ error: 'There is no failed AI request to recover' }, 409);
+      if (body.type === 'retry-ai') {
+        const resumed = { ...room, aiFailure: undefined };
+        await this.save(resumed); await this.publish(resumed); await this.maybeRunAi(resumed);
+        return json({ recovered: true });
+      }
+      const failedPlayer = room.state.players.find(player => player.id === room.aiFailure?.playerId && player.isAI);
+      const aiIndex = room.state.players.filter(player => player.isAI).findIndex(player => player.id === failedPlayer?.id);
+      const currentChannel = room.aiChannels[aiIndex];
+      if (!failedPlayer || aiIndex < 0 || aiIndex >= room.aiChannels.length) return json({ error: 'Failed AI seat is unavailable' }, 409);
+      if (!currentChannel || !isRoomAiChannel(currentChannel) || !isRoomAiChannel(body.channelId) ||
+        !availableRoomAiChannels(room.aiChannels, currentChannel).includes(body.channelId)) return json({ error: 'Invalid or already assigned AI channel' }, 400);
+      const aiChannels = room.aiChannels.slice();
+      aiChannels[aiIndex] = body.channelId;
+      const switched = { ...room, aiChannels, aiFailure: undefined };
+      await this.save(switched);
+      await this.env.DB?.prepare('UPDATE rooms SET ai_channels_json = ?, updated_at = ? WHERE id = ?').bind(JSON.stringify(aiChannels), Date.now(), room.roomId).run();
+      await this.publish(switched); await this.maybeRunAi(switched);
+      return json({ recovered: true, aiChannels });
+    }
     if (body.type === 'resume' || body.type === 'pause' || body.type === 'close') {
       if (request.headers.get('X-Room-Internal') !== '1') return json({ error: 'Forbidden' }, 403);
       if (body.type === 'resume') return this.resume(room);
@@ -187,7 +212,13 @@ export class RoomGame {
 
   private view(room: StoredRoom, viewerId: string) {
     const actor = this.timedActor(room.state);
-    return { state: projectRoomState(room.state, viewerId), remaining: room.remaining, revision: room.revision, deadline: actor ? this.deadline(room, actor.id) ?? null : null, paused: Boolean(room.pausedAt), endedAt: room.endedAt ?? null };
+    const aiFailure = room.aiFailure ? {
+      playerId: room.aiFailure.playerId,
+      channelId: room.aiFailure.channelId,
+      status: room.aiFailure.status,
+      message: viewerId === room.owner.uuid ? room.aiFailure.message : undefined,
+    } : null;
+    return { state: projectRoomState(room.state, viewerId), aiChannels: room.aiChannels, aiFailure, remaining: room.remaining, revision: room.revision, deadline: actor ? this.deadline(room, actor.id) ?? null : null, paused: Boolean(room.pausedAt), endedAt: room.endedAt ?? null };
   }
 
   private async save(room: StoredRoom) {
@@ -246,7 +277,7 @@ export class RoomGame {
 
   private async maybeRunAi(room: StoredRoom) {
     const actor = this.timedActor(room.state);
-    if (!actor?.isAI || room.state.phase === GamePhase.GAME_OVER) return;
+    if (!actor?.isAI || room.state.phase === GamePhase.GAME_OVER || room.aiFailure) return;
     const task = this.runAi(room.revision, actor.id);
     const waitUntil = (this.state as any).waitUntil;
     if (typeof waitUntil === 'function') waitUntil.call(this.state, task); else void task;
@@ -256,7 +287,23 @@ export class RoomGame {
     const room = await this.load();
     if (!room || room.revision !== expectedRevision || this.timedActor(room.state)?.id !== actorId) return;
     let decision: any;
-    try { decision = await this.callOwnerAi(room, actorId); } catch { decision = { type: 'PASS' }; }
+    try {
+      decision = await this.callOwnerAi(room, actorId);
+    } catch (error) {
+      const latest = await this.load();
+      if (!latest || latest.revision !== expectedRevision || this.timedActor(latest.state)?.id !== actorId) return;
+      const channelId = this.channelForAi(latest, actorId);
+      const failure: RoomAiFailure = {
+        playerId: actorId,
+        channelId,
+        status: error instanceof AIChannelError ? error.status : 502,
+        message: error instanceof AIChannelError ? error.message : 'The AI request failed before a valid response was received.',
+        failedAt: Date.now(),
+      };
+      const failed = { ...latest, aiFailure: failure };
+      await this.save(failed); await this.publish(failed); await this.schedule(failed);
+      return;
+    }
     const latest = await this.load();
     if (!latest || latest.revision !== expectedRevision || this.timedActor(latest.state)?.id !== actorId) return;
     const next = this.applyAiDecision(latest.state, actorId, decision);
@@ -275,6 +322,11 @@ export class RoomGame {
     return handlePass(state, actorId);
   }
 
+  private channelForAi(room: StoredRoom, aiId: string) {
+    const seatIndex = room.state.players.filter(player => player.isAI).findIndex(player => player.id === aiId);
+    return room.aiChannels[seatIndex] || aiId.replace('room-ai-', '');
+  }
+
   private async callOwnerAi(room: StoredRoom, aiId: string) {
     const appId = this.env.SSO_APP_ID || 'coup-game'; const appSecret = this.env.SSO_APP_SECRET || this.env.SSO_SECRET;
     if (!room.owner.isAdmin) {
@@ -282,7 +334,7 @@ export class RoomGame {
       if (!quota.ok) throw new Error('Owner quota unavailable');
     }
     const player = room.state.players.find(candidate => candidate.id === aiId)!;
-    const response = await callAIChannel(aiId.replace('room-ai-', ''), this.env, createAIDecisionRequest(room.state, player));
+    const response = await callAIChannel(this.channelForAi(room, aiId), this.env, createAIDecisionRequest(room.state, player));
     if (!room.owner.isAdmin) await fetch('https://accounts.aryuki.com/api/quota/consume', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${appSecret}` }, body: JSON.stringify({ uuid: room.owner.uuid, app_id: appId, tokens: response.totalTokens }) });
     const cleaned = response.content.replace(/<think>[\s\S]*?<\/think>/ig, '').trim(); const match = cleaned.match(/\{[\s\S]*\}/);
     return JSON.parse(match?.[0] || cleaned);

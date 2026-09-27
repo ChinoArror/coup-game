@@ -45,6 +45,7 @@ export const roomApi = {
   close: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/close`, { method: 'POST' }),
   resume: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
   pause: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/pause`, { method: 'POST' }),
+  recoverAi: (id: string, type: 'retry-ai' | 'switch-ai', channelId?: string) => api(`/api/rooms/${encodeURIComponent(id)}/ai-recovery`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, ...(channelId ? { channelId } : {}) }) }),
   leave: (id: string) => api(`/api/rooms/${encodeURIComponent(id)}/leave`, { method: 'POST' }),
   kick: (id: string, userUuid: string) => api(`/api/rooms/${encodeURIComponent(id)}/kick`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userUuid }) }),
 };

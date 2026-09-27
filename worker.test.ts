@@ -171,15 +171,15 @@ class FakeDatabase {
   }
 }
 
-function tokenFor(role: 'admin' | 'user') {
-  const payload = Buffer.from(JSON.stringify({ uuid: `${role}-uuid`, username: role, role })).toString('base64url');
+function tokenFor(role: 'admin' | 'user', uuid = `${role}-uuid`) {
+  const payload = Buffer.from(JSON.stringify({ uuid, username: role, role })).toString('base64url');
   return `header.${payload}.signature`;
 }
 
-function request(path: string, role: 'admin' | 'user', init: RequestInit = {}) {
+function request(path: string, role: 'admin' | 'user', init: RequestInit = {}, uuid?: string) {
   return new Request(`https://coup.example${path}`, {
     ...init,
-    headers: { Cookie: `coup_session=${tokenFor(role)}`, ...(init.headers || {}) },
+    headers: { Cookie: `coup_session=${tokenFor(role, uuid)}`, ...(init.headers || {}) },
   });
 }
 
@@ -191,6 +191,8 @@ function createEnvironment(db = new FakeDatabase()) {
       ASSETS: { fetch: vi.fn(async () => new Response('missing', { status: 404 })) },
       SSO_APP_ID: 'coup-game',
       SSO_APP_SECRET: 'subapp-secret',
+      AI_RELAY_URL: 'https://model.aryuki.com',
+      AI_RELAY_SHARED_SECRET: 'relay-shared-test-secret-at-least-32-bytes',
       GEMINI_API_KEY: 'gemini-key',
       DEEPSEEK_API_KEY: 'deepseek-key',
       OPENAI_API_KEY: 'openai-key',
@@ -236,13 +238,16 @@ function installFetchMock(providerStatus = 200) {
       consumeBodies.push(JSON.parse(String(init?.body)));
       return Response.json({ success: true });
     }
-    if (url.includes('api.openai.com')) {
+    if (url.includes('model.aryuki.com/openai/')) {
       return providerStatus === 200
         ? Response.json({ choices: [{ message: { content: '{"type":"PASS"}' } }], usage: { total_tokens: 21 } })
         : new Response('provider unavailable', { status: providerStatus });
     }
-    if (url.includes('generativelanguage.googleapis.com')) {
+    if (url.includes('model.aryuki.com/gemini/')) {
       return Response.json({ candidates: [{ content: { parts: [{ text: '{"type":"PASS"}' }] } }], usageMetadata: { totalTokenCount: 7 } });
+    }
+    if (url.includes('model.aryuki.com/deepseek/')) {
+      return Response.json({ choices: [{ message: { content: '{"type":"PASS"}' } }], usage: { total_tokens: 17 } });
     }
     throw new Error(`Unexpected fetch: ${url}`);
   }));
@@ -323,12 +328,13 @@ describe('multiplayer room lifecycle', () => {
     const { quotaChecks, consumeBodies } = installFetchMock();
     const pending: Promise<unknown>[] = [];
     const initialized: any[] = [];
+    const roomHints: unknown[] = [];
     env.ROOM_GAME = {
       idFromName: (name: string) => name,
-      get: () => ({ fetch: async (request: Request) => {
+      get: (_id: string, options: unknown) => { roomHints.push(options); return { fetch: async (request: Request) => {
         initialized.push(await request.json());
         return Response.json({ ok: true });
-      } }),
+      } }; },
     };
     const ctx = { waitUntil: (promise: Promise<unknown>) => pending.push(promise) } as any;
     const created = await worker.fetch(request('/api/rooms', 'user', {
@@ -352,6 +358,37 @@ describe('multiplayer room lifecycle', () => {
     expect(db.rooms.get(room.id)?.status).toBe('started');
     expect(initialized[0]).toMatchObject({ type: 'initialize', room: { roomId: room.id, owner: { uuid: 'user-uuid' } } });
     expect(initialized[0].room.state.players.map((player: any) => player.name)).toEqual(['user', 'I', 'III']);
+    expect(roomHints).toContainEqual({ locationHint: 'enam' });
+  });
+
+  it('routes AI recovery through the owner-only room Durable Object command', async () => {
+    const { env, db } = createEnvironment();
+    installFetchMock();
+    const created = await worker.fetch(request('/api/rooms', 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ seatCount: 3, aiChannels: ['1'] }),
+    }), env, { waitUntil() {} } as any);
+    const room = await created.json() as any;
+    db.rooms.get(room.id)!.status = 'started';
+    const commands: Request[] = [];
+    env.ROOM_GAME = {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async (command: Request) => { commands.push(command); return Response.json({ recovered: true, aiChannels: ['2'] }); } }),
+    };
+
+    const response = await worker.fetch(request(`/api/rooms/${room.id}/ai-recovery`, 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'switch-ai', channelId: '2' }),
+    }), env, { waitUntil() {} } as any);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ recovered: true, aiChannels: ['2'] });
+    expect(commands).toHaveLength(1);
+    expect(commands[0].headers.get('X-Room-Actor')).toBe('user-uuid');
+    expect(commands[0].headers.get('X-Room-Internal')).toBe('1');
+    expect(await commands[0].json()).toEqual({ type: 'switch-ai', channelId: '2' });
+
+    const denied = await worker.fetch(request(`/api/rooms/${room.id}/ai-recovery`, 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'retry-ai' }),
+    }, 'non-owner-uuid'), env, { waitUntil() {} } as any);
+    expect(denied.status).toBe(403);
   });
 
   it('lets admins list active rooms and observe them without taking a seat', async () => {

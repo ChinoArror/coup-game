@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CircleDollarSign, Shield } from 'lucide-react';
 import { ActionType, CardType, GamePhase, type GameState, type Player } from './types';
 import { roomMobileClasses } from './services/roomUi';
+import { availableRoomAiChannels } from './services/rooms';
+import { roomApi } from './services/roomClient';
 
 type RoomWireState = {
   type: 'state';
@@ -10,6 +12,8 @@ type RoomWireState = {
   deadline: number | null;
   remaining: Record<string, number>;
   paused?: boolean;
+  aiChannels?: string[];
+  aiFailure?: { playerId: string; channelId: string; status: number; message?: string } | null;
 };
 
 const getCardCaption = (type: CardType) => ({
@@ -79,10 +83,11 @@ function ActionButton({ label, sub, onClick, color = 'slate' }: { label: string;
   );
 }
 
-export default function RoomMatch({ roomId, currentUserId, spectator = false, watchToken }: { roomId: string; currentUserId: string; spectator?: boolean; watchToken?: string }) {
+export default function RoomMatch({ roomId, currentUserId, spectator = false, watchToken, isOwner = false }: { roomId: string; currentUserId: string; spectator?: boolean; watchToken?: string; isOwner?: boolean }) {
   const [wire, setWire] = useState<RoomWireState | null>(null);
   const [error, setError] = useState('');
   const [targetAction, setTargetAction] = useState<ActionType | null>(null);
+  const [recovering, setRecovering] = useState(false);
   const socket = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -130,6 +135,13 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
     setTargetAction(null);
   };
 
+  const recoverAi = async (type: 'retry-ai' | 'switch-ai', channelId?: string) => {
+    setRecovering(true); setError('');
+    try { await roomApi.recoverAi(roomId, type, channelId); }
+    catch (reason: any) { setError(reason.message || 'AI recovery failed'); }
+    finally { setRecovering(false); }
+  };
+
   if (!state || !boardPlayer) return <div className="flex min-h-[360px] items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 font-mono text-amber-500 animate-pulse">ESTABLISHING CONNECTION...</div>;
 
   const isMyTurn = !wire?.paused && !spectator && state.phase === GamePhase.TURN_START && state.players[state.currentPlayerIndex]?.id === currentUserId;
@@ -145,7 +157,9 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
   const canBlockCaptain = isActionPhase && incomingAction === ActionType.STEAL && isTargeted;
   const canBlockAmbassador = canBlockCaptain;
   const canChallenge = (isActionPhase && incomingAction !== ActionType.FOREIGN_AID) || isBlockPhase;
-  const status = wire?.paused
+  const status = wire?.aiFailure
+    ? 'AI CONNECTION LOST · WAITING FOR HOST'
+    : wire?.paused
     ? 'ROOM PAUSED. WAITING FOR OWNER...'
     : state.phase === GamePhase.GAME_OVER
     ? `GAME OVER. WINNER: ${state.winner || 'ROOM CLOSED'}`
@@ -159,6 +173,7 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
 
   return (
     <div className="min-h-screen bg-slate-950 font-sans text-slate-200 selection:bg-amber-500/30">
+      {wire?.aiFailure && !wire.paused && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"><section role="dialog" aria-modal="true" aria-labelledby="ai-recovery-title" className="w-full max-w-md rounded-2xl border border-amber-500/40 bg-slate-900 p-5 shadow-2xl"><p className="font-mono text-xs tracking-widest text-amber-400">ROOM AGENT CONNECTION</p><h2 id="ai-recovery-title" className="mt-2 text-xl font-bold text-white">{isOwner ? `AI ${wire.aiFailure.channelId} could not respond` : 'Agent connection interrupted'}</h2><p className="mt-3 text-sm text-slate-300">{isOwner ? wire.aiFailure.message || `The current AI request failed (HTTP ${wire.aiFailure.status}). You can retry or move this seat to an unused AI channel.` : 'Waiting for the room owner to retry or switch this AI. The game is paused at this action.'}</p>{isOwner && <div className="mt-5 grid gap-2">{availableRoomAiChannels(wire.aiChannels || [], wire.aiFailure.channelId).map(channel => <button key={channel} disabled={recovering} onClick={() => void recoverAi('switch-ai', channel)} className="min-h-11 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-left text-sm font-bold text-amber-200 disabled:opacity-50">Switch this seat to AI {({ '1': 'I', '2': 'II', '3': 'III' } as Record<string, string>)[channel]}</button>)}<button disabled={recovering} onClick={() => void recoverAi('retry-ai')} className="min-h-11 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 disabled:opacity-50">{recovering ? 'RECONNECTING…' : 'RETRY CURRENT AI'}</button>{availableRoomAiChannels(wire.aiChannels || [], wire.aiFailure.channelId).length === 0 && <p className="text-xs text-slate-400">No unused AI channel is available in this room.</p>}</div>}</section></div>}
       <main className="mx-auto grid max-w-5xl grid-cols-1 gap-5 p-3 sm:gap-6 sm:p-4 md:p-6 lg:grid-cols-12">
         <div className="flex flex-col gap-6 lg:col-span-8">
           <div className="grid grid-cols-2 gap-2 sm:gap-4">
@@ -179,7 +194,8 @@ export default function RoomMatch({ roomId, currentUserId, spectator = false, wa
             ) : (
               <>
                 <div className="mb-2 font-mono text-sm uppercase tracking-widest text-slate-400">Current Protocol</div>
-                <div className="mb-4 text-xl font-bold text-white sm:text-2xl md:text-3xl">{status}</div>
+                <div className={`mb-4 text-xl font-bold sm:text-2xl md:text-3xl ${wire?.aiFailure ? 'text-amber-300' : 'text-white'}`}>{status}</div>
+                {wire?.aiFailure && <p className="text-sm text-slate-400">{isOwner ? 'Resolve the agent connection to continue.' : 'Waiting for the room owner to restore this agent.'}</p>}
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
                   {state.waitingForResponseFrom.map(id => <div key={id} className="animate-pulse rounded-full border border-slate-700 bg-slate-800 px-3 py-1 font-mono text-xs tracking-widest text-slate-300">Waiting for {state.players.find(player => player.id === id)?.name}</div>)}
                 </div>

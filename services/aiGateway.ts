@@ -4,6 +4,8 @@ export interface AIChannelEnvironment {
   GEMINI_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
   OPENAI_API_KEY?: string;
+  AI_RELAY_URL?: string;
+  AI_RELAY_SHARED_SECRET?: string;
   Model_1?: string;
   Model_2?: string;
   Model_3?: string;
@@ -31,6 +33,39 @@ type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 function requireConfig(value: string | undefined, label: string): string {
   if (!value) throw new AIChannelError(`${label} is not configured`);
   return value;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function signedRelayHeaders(
+  env: AIChannelEnvironment,
+  path: string,
+  apiKey: string,
+  body: string,
+): Promise<{ url: string; headers: Headers }> {
+  const relayUrl = new URL(requireConfig(env.AI_RELAY_URL, 'AI_RELAY_URL'));
+  if (relayUrl.protocol !== 'https:' || relayUrl.username || relayUrl.password || relayUrl.search || relayUrl.hash) {
+    throw new AIChannelError('AI_RELAY_URL must be a fixed HTTPS origin', 500);
+  }
+  const secret = requireConfig(env.AI_RELAY_SHARED_SECRET, 'AI_RELAY_SHARED_SECRET');
+  if (secret.length < 32) throw new AIChannelError('AI_RELAY_SHARED_SECRET must be at least 32 characters', 500);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const nonce = crypto.randomUUID();
+  const canonical = ['POST', path, timestamp, nonce, await sha256Hex(body), await sha256Hex(apiKey)].join('\n');
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signatureBytes = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(canonical)));
+  const signature = btoa(String.fromCharCode(...signatureBytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'X-Upstream-API-Key': apiKey,
+    'X-Relay-Timestamp': timestamp,
+    'X-Relay-Nonce': nonce,
+    'X-Relay-Signature': signature,
+  });
+  return { url: new URL(path, relayUrl).toString(), headers };
 }
 
 function sanitizeProviderMessage(message: string): string {
@@ -65,18 +100,15 @@ export async function callAIChannel(
   if (channelId === '1') {
     const apiKey = requireConfig(env.GEMINI_API_KEY, 'GEMINI_API_KEY');
     const model = requireConfig(env.Model_1, 'Model_1');
-    const response = await fetcher(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: request.systemInstruction }] },
-          contents: [{ role: 'user', parts: [{ text: request.userMessage }] }],
-          generationConfig: { responseMimeType: 'application/json' },
-        }),
-      },
-    );
+    if (!/^[A-Za-z0-9._-]+$/.test(model)) throw new AIChannelError('Invalid Gemini model name', 400);
+    const path = `/gemini/v1beta/models/${model}:generateContent`;
+    const body = JSON.stringify({
+      system_instruction: { parts: [{ text: request.systemInstruction }] },
+      contents: [{ role: 'user', parts: [{ text: request.userMessage }] }],
+      generationConfig: { responseMimeType: 'application/json' },
+    });
+    const relay = await signedRelayHeaders(env, path, apiKey, body);
+    const response = await fetcher(relay.url, { method: 'POST', headers: relay.headers, body });
     await ensureSuccess(response);
     const data = await response.json() as any;
     return {
@@ -89,18 +121,21 @@ export async function callAIChannel(
     const isOpenAI = channelId === '3';
     const apiKey = requireConfig(isOpenAI ? env.OPENAI_API_KEY : env.DEEPSEEK_API_KEY, isOpenAI ? 'OPENAI_API_KEY' : 'DEEPSEEK_API_KEY');
     const model = requireConfig(isOpenAI ? env.Model_3 : env.Model_2, isOpenAI ? 'Model_3' : 'Model_2');
-    const response = await fetcher(isOpenAI ? 'https://api.openai.com/v1/chat/completions' : 'https://api.deepseek.com/chat/completions', {
+    const path = isOpenAI ? '/openai/v1/chat/completions' : '/deepseek/chat/completions';
+    const body = JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: request.systemInstruction },
+        { role: 'user', content: request.userMessage },
+      ],
+      reasoning_effort: isOpenAI ? 'high' : 'max',
+      ...(isOpenAI ? {} : { thinking: { type: 'enabled' } }),
+    });
+    const relay = await signedRelayHeaders(env, path, apiKey, body);
+    const response = await fetcher(relay.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: request.systemInstruction },
-          { role: 'user', content: request.userMessage },
-        ],
-        reasoning_effort: isOpenAI ? 'high' : 'max',
-        ...(isOpenAI ? {} : { thinking: { type: 'enabled' } }),
-      }),
+      headers: relay.headers,
+      body,
     });
     await ensureSuccess(response);
     const data = await response.json() as any;

@@ -2,6 +2,10 @@ name = "coup-shadow-protocol"
 main = "worker.ts"
 compatibility_date = "2024-02-20"
 
+[placement]
+# Latency hint only; provider egress is handled by api-transfer's US host.
+region = "gcp:us-east4"
+
 routes = [
   { pattern = "coup.aryuki.com", custom_domain = true }
 ]
@@ -13,9 +17,13 @@ binding = "ASSETS"
 
 [vars]
 SSO_APP_ID = "coup-shadow-protocol"
+AI_RELAY_URL = "https://model.aryuki.com"
 Model_1 = "gemini-3.8-flash"
 Model_2 = "deepseek-flash"
-Model_3 = "gpt-5.6-luna"
+Model_3 = "gpt-6-luna"
+
+[observability]
+enabled = false
 
 [[d1_databases]]
 binding = "DB"

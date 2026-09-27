@@ -104,10 +104,14 @@ npm run build
    npx wrangler secret put GEMINI_API_KEY
    npx wrangler secret put DEEPSEEK_API_KEY
    npx wrangler secret put OPENAI_API_KEY
+   npx wrangler secret put AI_RELAY_SHARED_SECRET
    ```
    Configure the channel models through Worker variables: `Model_1` (Gemini), `Model_2` (DeepSeek), and `Model_3` (OpenAI). API keys must never be placed in `wrangler.toml` or the frontend.
+   `AI_RELAY_SHARED_SECRET` must match the secret configured on the `api-transfer` Worker and its US egress service. The provider keys stay only on this Coup Worker and are forwarded per request in a signed header.
 4. **Deploy to Cloudflare Network**
    ```bash
    npm run build
    npx wrangler deploy
    ```
+
+AI traffic requires the separately deployed `api-transfer` service and its verified US egress host. A Worker Placement region is a latency hint and does not guarantee the country of outbound provider connections. If the relay is unavailable, AI requests fail closed; they do not fall back to direct provider calls.

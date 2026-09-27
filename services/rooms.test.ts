@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { roomAiName, validateRoomDraft } from './rooms';
+import { availableRoomAiChannels, roomAiName, validateRoomDraft } from './rooms';
 
 describe('room draft validation', () => {
+  it('offers only unused providers when replacing a failed room AI', () => {
+    expect(availableRoomAiChannels(['1', '2'], '1')).toEqual(['3']);
+    expect(availableRoomAiChannels(['1', '2', '3'], '1')).toEqual([]);
+  });
+
   it('accepts a 3-6 seat room with unique existing AI channels and a human host', () => {
     expect(validateRoomDraft({ seatCount: 5, aiChannels: ['1', '2', '3'] })).toEqual({ valid: true });
   });

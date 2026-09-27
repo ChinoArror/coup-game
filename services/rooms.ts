@@ -11,6 +11,10 @@ export type RoomDraftValidation = { valid: true } | { valid: false; error: strin
 
 export const roomAiName = (channelId: RoomAiChannel): 'I' | 'II' | 'III' => ROOM_AI_NAMES[channelId];
 
+/** Channels that can replace one AI without assigning a provider twice in one room. */
+export const availableRoomAiChannels = (aiChannels: string[], currentChannel: string): RoomAiChannel[] =>
+  ROOM_AI_CHANNELS.filter(channel => channel !== currentChannel && !aiChannels.includes(channel));
+
 export const isRoomAiChannel = (value: string): value is RoomAiChannel => ROOM_AI_CHANNELS.includes(value as RoomAiChannel);
 
 export const validateRoomDraft = ({ seatCount, aiChannels }: RoomDraft): RoomDraftValidation => {

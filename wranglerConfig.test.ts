@@ -11,8 +11,10 @@ describe('Worker AI channel configuration', () => {
     expect(vars).toContain('Model_3');
     expect(vars).toContain('Model_1 = "gemini-3.8-flash"');
     expect(vars).toContain('Model_2 = "deepseek-flash"');
-    expect(vars).toContain('Model_3 = "gpt-5.6-luna"');
+    expect(vars).toContain('Model_3 = "gpt-6-luna"');
+    expect(vars).toContain('AI_RELAY_URL = "https://model.aryuki.com"');
     expect(vars).not.toMatch(/(?:GEMINI|DEEPSEEK|OPENAI)_API_KEY\s*=/i);
+    expect(vars).not.toMatch(/AI_RELAY_SHARED_SECRET\s*=/i);
     expect(vars).not.toMatch(/(?:SSO_SECRET|PROTOCOL_PASSWORD|ADMIN_USER|ADMIN_PASS)\s*=/);
   });
 
