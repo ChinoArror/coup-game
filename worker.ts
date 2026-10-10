@@ -1,6 +1,8 @@
 import { AIChannelError, callAIChannel } from './services/aiGateway';
 import { isRoomAiChannel, roomAiName, validateRoomDraft } from './services/rooms';
+import { clearSessionCookie, createSessionCookie } from './services/sessionCookie';
 import { initializeGameForSeats } from './utils/gameEngine';
+import { DEFAULT_SITE_URL, normalizeSiteUrl, publicSeoPages, renderNotFoundHtml, renderPrivateHtml, renderPublicHtml, renderRobots, renderSitemap } from './seo';
 export { RoomGame } from './roomGame';
 
 const SSO_URL = 'https://accounts.aryuki.com';
@@ -76,7 +78,7 @@ export default {
         if (!response.ok) return null;
         const data = await response.json() as any;
         const user = data.user || data;
-        return user?.uuid ? user : null;
+        return (user?.uuid || user?.sub) ? user : null;
       } catch {
         return null;
       }
@@ -84,19 +86,22 @@ export default {
 
     const getVerifiedSession = async () => {
       const token = parseCookies(request.headers.get('Cookie')).coup_session;
-      if (!token || !decodeJwt(token)) return null;
+      const payload = token ? decodeJwt(token) : null;
+      if (!token || !payload) return null;
+      if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) return null;
       const user = await verifyToken(token);
       if (!user) return null;
       return {
-        uuid: user.uuid,
+        uuid: user.uuid || user.sub,
         username: user.username || 'agent',
         name: user.name || user.username || 'Agent',
-        role: user.role || 'user',
+        role: user.role || payload.role || 'user',
         token,
       };
     };
 
     const session = await getVerifiedSession();
+    const staleCookie = Boolean(parseCookies(request.headers.get('Cookie')).coup_session) && !session;
 
     const requireSession = () => {
       if (!session) throw new HttpError(401, 'Unauthorized');
@@ -160,6 +165,59 @@ export default {
     };
 
     try {
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        const siteUrl = normalizeSiteUrl(env.SITE_URL || DEFAULT_SITE_URL);
+        const environment = env.ENVIRONMENT || 'preview';
+        const canonicalHost = new URL(siteUrl).hostname;
+        const redirectHost = environment === 'production' && (
+          url.hostname.endsWith('.workers.dev') || url.hostname === `www.${canonicalHost}` ||
+          (url.hostname === canonicalHost && url.protocol !== 'https:')
+        );
+        const trimmedPath = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '');
+        if (redirectHost || trimmedPath !== url.pathname || url.pathname === '/index.html') {
+          const destination = new URL(`${siteUrl}${url.pathname === '/index.html' ? '/' : trimmedPath}`);
+          destination.search = url.search;
+          return Response.redirect(destination.toString(), 308);
+        }
+
+        const previewHeaders = environment === 'production' ? {} : { 'X-Robots-Tag': 'noindex, nofollow' };
+        if (url.pathname === '/robots.txt') return new Response(request.method === 'HEAD' ? null : renderRobots(siteUrl), {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=300, s-maxage=3600', ...previewHeaders },
+        });
+        if (url.pathname === '/sitemap.xml') return new Response(request.method === 'HEAD' ? null : renderSitemap(siteUrl), {
+          headers: { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=300, s-maxage=3600', ...previewHeaders },
+        });
+
+        if (!url.pathname.startsWith('/api/')) {
+          const page = publicSeoPages[url.pathname];
+          const privateRoute = url.pathname === '/play' || url.pathname === '/game' ||
+            url.pathname === '/game/rules' || url.pathname === '/sso-callback';
+          const roomMatch = url.pathname.match(/^\/game\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+          let roomExists = Boolean(roomMatch && !session);
+          if (roomMatch && session) {
+            roomExists = Boolean(await env.DB.prepare('SELECT id FROM rooms WHERE id = ?').bind(roomMatch[1]).first());
+          }
+          if (page || privateRoute || roomExists || !url.pathname.startsWith('/assets/')) {
+            const asset = await env.ASSETS.fetch(new Request(new URL('/', url), { method: 'GET' }));
+            const shell = await asset.text();
+            const status = page || privateRoute || roomExists ? 200 : 404;
+            const html = page
+              ? renderPublicHtml(shell, page, { siteUrl, environment, verification: env.GOOGLE_SITE_VERIFICATION })
+              : status === 404 ? renderNotFoundHtml(shell) : renderPrivateHtml(shell);
+            const isIndexable = Boolean(page && environment === 'production');
+            return new Response(request.method === 'HEAD' ? null : html, {
+              status,
+              headers: {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': isIndexable ? 'public, max-age=0, s-maxage=300' : 'private, no-store',
+                ...(!isIndexable ? { 'X-Robots-Tag': 'noindex, nofollow' } : {}),
+              },
+            });
+          }
+          return env.ASSETS.fetch(request);
+        }
+      }
+
       const roomIdFromPath = (suffix = '') => url.pathname.startsWith('/api/rooms/') ? decodeURIComponent(url.pathname.slice('/api/rooms/'.length, suffix ? -suffix.length : undefined)) : null;
       const hashInvite = async (token: string) => {
         const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
@@ -252,8 +310,9 @@ export default {
         const room = await getRoom(invite.room_id); if (!room) throw new HttpError(404, 'Room not found');
         if (room.status === 'started' || room.status === 'paused') return json({ room: { id: room.id, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: false, canWatch: true });
         if (room.status !== 'open') throw new HttpError(409, 'Room is not accepting members');
-        if (invite.use_count >= invite.max_uses) throw new HttpError(404, 'Invitation is unavailable');
-        return json({ room: { id: room.id, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: !(await getMember(room.id, user.uuid)), canWatch: false });
+        const member = await getMember(room.id, user.uuid);
+        if (invite.use_count >= invite.max_uses && !member) throw new HttpError(404, 'Invitation is unavailable');
+        return json({ room: { id: room.id, status: room.status, seatCount: room.seat_count, aiChannels: JSON.parse(room.ai_channels_json) }, canJoin: !member, canWatch: false });
       }
 
       if (url.pathname === '/api/admin/rooms' && request.method === 'GET') {
@@ -403,23 +462,25 @@ export default {
         const user = requireSession(); await ensureRooms(); const id = roomIdFromPath(); if (!id || id.includes('/')) throw new HttpError(404, 'Room not found'); const { room, member } = await requireRoomMember(id, user); return json(roomDetails(room, await activeMembers(id), member));
       }
       if (url.pathname === '/api/logout' && request.method === 'POST') {
-        return json({ success: true }, 200, { 'Set-Cookie': 'coup_session=; Path=/; Domain=.aryuki.com; Max-Age=0;' });
+        return json({ success: true }, 200, { 'Set-Cookie': clearSessionCookie(url.hostname) });
       }
 
       if (url.pathname === '/api/sso-callback' && request.method === 'POST') {
         const body = await request.json() as any;
         if (!body?.token) throw new HttpError(400, 'Missing token');
+        const callbackPayload = decodeJwt(body.token);
+        if (typeof callbackPayload?.exp === 'number' && callbackPayload.exp * 1000 <= Date.now()) throw new HttpError(401, 'Token expired');
         const user = await verifyToken(body.token);
         if (!user) throw new HttpError(401, 'SSO verification failed');
         await env.DB.prepare('INSERT INTO users (uuid, user_id, name, username, token, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(uuid) DO UPDATE SET name=excluded.name, username=excluded.username, token=excluded.token, last_seen=excluded.last_seen')
           .bind(user.uuid, user.user_id || 0, user.name || user.username || 'Agent', user.username || 'agent', body.token, Date.now(), Date.now()).run();
-        return json({ success: true }, 200, { 'Set-Cookie': `coup_session=${body.token}; Path=/; Domain=.aryuki.com; Max-Age=604800; HttpOnly; Secure; SameSite=Lax` });
+        return json({ success: true }, 200, { 'Set-Cookie': createSessionCookie(body.token, url.hostname) });
       }
 
       if (url.pathname === '/api/me' && request.method === 'GET') {
         const user = requireSession();
         const localUser = await env.DB.prepare('SELECT * FROM users WHERE uuid = ?').bind(user.uuid).first() as any;
-        if (localUser?.is_paused) return json({ error: 'paused' }, 403, { 'Set-Cookie': 'coup_session=; Path=/; Max-Age=0;' });
+        if (localUser?.is_paused) return json({ error: 'paused' }, 403, { 'Set-Cookie': clearSessionCookie(url.hostname) });
         return json({ uuid: user.uuid, username: user.username, name: user.name, role: user.role });
       }
 
@@ -551,7 +612,7 @@ export default {
       if (url.pathname.startsWith('/api/')) throw new HttpError(404, 'Not found');
       return env.ASSETS.fetch(request);
     } catch (error: any) {
-      if (error instanceof HttpError) return json({ error: error.message }, error.status);
+      if (error instanceof HttpError) return json({ error: error.message }, error.status, error.status === 401 && staleCookie ? { 'Set-Cookie': clearSessionCookie(url.hostname) } : {});
       if (error instanceof AIChannelError) return json({ error: error.message }, error.status);
       console.error('[WORKER_ERROR]', error?.message || error);
       return json({ error: 'Internal server error' }, 500);

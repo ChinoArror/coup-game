@@ -54,6 +54,7 @@ export const timeoutTransition = (state: GameState): GameState => {
 
 export class RoomGame {
   private sockets = new Map<WebSocket, string>();
+  private aiInFlight: { key: string; task: Promise<void> } | null = null;
 
   constructor(private state: any, private env: any) {}
 
@@ -189,6 +190,26 @@ export class RoomGame {
     return state.players.find(player => player.id === id);
   }
 
+  private aiActor(state: GameState) {
+    if (state.phase === GamePhase.TURN_START || state.phase === GamePhase.CHALLENGE_LOSS) {
+      const actor = this.timedActor(state);
+      return actor?.isAI ? actor : undefined;
+    }
+    return state.waitingForResponseFrom
+      .map(id => state.players.find(player => player.id === id))
+      .find(player => player?.isAI && !player.isEliminated);
+  }
+
+  private aiDecisionKey(state: GameState, actorId: string) {
+    const action = state.pendingAction;
+    const block = state.pendingBlock;
+    return JSON.stringify([
+      state.gameId, state.turn, state.phase, actorId, state.players[state.currentPlayerIndex]?.id,
+      action?.actorId, action?.action, action?.targetId,
+      block?.blockerId, block?.cardClaimed, state.playerToLoseInfluence,
+    ]);
+  }
+
   private chargeClock(room: StoredRoom, actorId: string): StoredRoom {
     if (!finiteLimit(room.config.totalLimitMs) || room.remaining[actorId] === undefined) return room;
     if (this.timedActor(room.state)?.id !== actorId) return room;
@@ -276,22 +297,31 @@ export class RoomGame {
   }
 
   private async maybeRunAi(room: StoredRoom) {
-    const actor = this.timedActor(room.state);
-    if (!actor?.isAI || room.state.phase === GamePhase.GAME_OVER || room.aiFailure) return;
+    const actor = this.aiActor(room.state);
+    if (!actor || room.state.phase === GamePhase.GAME_OVER || room.aiFailure) return;
+    const key = this.aiDecisionKey(room.state, actor.id);
+    if (this.aiInFlight?.key === key) return;
     const task = this.runAi(room.revision, actor.id);
+    const inFlight = { key, task };
+    this.aiInFlight = inFlight;
+    void task.then(
+      () => { if (this.aiInFlight === inFlight) this.aiInFlight = null; },
+      () => { if (this.aiInFlight === inFlight) this.aiInFlight = null; },
+    );
     const waitUntil = (this.state as any).waitUntil;
     if (typeof waitUntil === 'function') waitUntil.call(this.state, task); else void task;
   }
 
   private async runAi(expectedRevision: number, actorId: string) {
     const room = await this.load();
-    if (!room || room.revision !== expectedRevision || this.timedActor(room.state)?.id !== actorId) return;
+    if (!room || room.revision !== expectedRevision || this.aiActor(room.state)?.id !== actorId) return;
+    const decisionKey = this.aiDecisionKey(room.state, actorId);
     let decision: any;
     try {
       decision = await this.callOwnerAi(room, actorId);
     } catch (error) {
       const latest = await this.load();
-      if (!latest || latest.revision !== expectedRevision || this.timedActor(latest.state)?.id !== actorId) return;
+      if (!latest || this.aiDecisionKey(latest.state, actorId) !== decisionKey || this.aiActor(latest.state)?.id !== actorId) return;
       const channelId = this.channelForAi(latest, actorId);
       const failure: RoomAiFailure = {
         playerId: actorId,
@@ -305,7 +335,7 @@ export class RoomGame {
       return;
     }
     const latest = await this.load();
-    if (!latest || latest.revision !== expectedRevision || this.timedActor(latest.state)?.id !== actorId) return;
+    if (!latest || this.aiDecisionKey(latest.state, actorId) !== decisionKey || this.aiActor(latest.state)?.id !== actorId) return;
     const next = this.applyAiDecision(latest.state, actorId, decision);
     const fallback = next === latest.state ? timeoutTransition(latest.state) : next;
     if (fallback === latest.state) return;

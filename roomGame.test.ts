@@ -37,6 +37,82 @@ describe('room timeout fallback', () => {
 });
 
 describe('room AI recovery', () => {
+  it('runs an AI response while an earlier human responder has not acted', async () => {
+    const stored = new Map<string, any>();
+    const tasks: Promise<unknown>[] = [];
+    const state = {
+      storage: {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => { stored.set(key, value); },
+        setAlarm: vi.fn(), deleteAlarm: vi.fn(),
+      },
+      waitUntil: (task: Promise<unknown>) => tasks.push(task),
+    };
+    const roomGame = new RoomGame(state, {});
+    const initial = initializeGameForSeats([
+      { id: 'owner', name: 'Owner', isAI: false },
+      { id: 'guest', name: 'Guest', isAI: false },
+      { id: 'room-ai-1', name: 'I', isAI: true },
+    ]);
+    const declared = handlePlayerAction(initial, 'owner', ActionType.TAX);
+    expect(declared.waitingForResponseFrom).toEqual(['guest', 'room-ai-1']);
+    const room = {
+      roomId: 'room-id', owner: { uuid: 'owner', isAdmin: true }, aiChannels: ['1'], state: declared,
+      config: {}, remaining: {}, phaseStartedAt: Date.now(), revision: declared.revision,
+      activity: { owner: Date.now(), guest: Date.now() },
+    };
+    stored.set('room', room);
+    (roomGame as any).callOwnerAi = vi.fn().mockResolvedValue({ type: 'PASS' });
+
+    await (roomGame as any).maybeRunAi(room);
+    await Promise.all(tasks);
+
+    expect((roomGame as any).callOwnerAi).toHaveBeenCalledOnce();
+    expect((stored.get('room').state as typeof declared).waitingForResponseFrom).toEqual(['guest']);
+    expect((stored.get('room').state as typeof declared).phase).toBe(GamePhase.ACTION_DECLARED);
+  });
+
+  it('keeps one pending AI decision when a human passes during the request', async () => {
+    const stored = new Map<string, any>();
+    const tasks: Promise<unknown>[] = [];
+    const state = {
+      storage: {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => { stored.set(key, value); },
+        setAlarm: vi.fn(), deleteAlarm: vi.fn(),
+      },
+      waitUntil: (task: Promise<unknown>) => tasks.push(task),
+    };
+    const roomGame = new RoomGame(state, {});
+    const initial = initializeGameForSeats([
+      { id: 'owner', name: 'Owner', isAI: false },
+      { id: 'guest', name: 'Guest', isAI: false },
+      { id: 'room-ai-1', name: 'I', isAI: true },
+    ]);
+    const declared = handlePlayerAction(initial, 'owner', ActionType.TAX);
+    const room = {
+      roomId: 'room-id', owner: { uuid: 'owner', isAdmin: true }, aiChannels: ['1'], state: declared,
+      config: {}, remaining: {}, phaseStartedAt: Date.now(), revision: declared.revision,
+      activity: { owner: Date.now(), guest: Date.now() },
+    };
+    stored.set('room', room);
+    let finishAi!: (value: { type: string }) => void;
+    const decision = new Promise<{ type: string }>(resolve => { finishAi = resolve; });
+    (roomGame as any).callOwnerAi = vi.fn().mockReturnValue(decision);
+
+    await (roomGame as any).maybeRunAi(room);
+    const passed = await roomGame.fetch(new Request('https://room.internal/action', {
+      method: 'POST', headers: { 'X-Room-Actor': 'guest', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'pass', revision: declared.revision }),
+    }));
+    expect(passed.status).toBe(200);
+    finishAi({ type: 'PASS' });
+    await Promise.all(tasks);
+
+    expect((roomGame as any).callOwnerAi).toHaveBeenCalledOnce();
+    expect((stored.get('room').state as typeof declared).phase).toBe(GamePhase.TURN_START);
+  });
+
   it('broadcasts a provider failure instead of silently passing and lets only the owner switch to an unused channel', async () => {
     const stored = new Map<string, any>();
     const tasks: Promise<unknown>[] = [];

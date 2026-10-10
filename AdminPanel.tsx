@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Cpu, Eye, FlaskConical, Power, RefreshCw, Save, ShieldCheck, Users } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, ArrowRight, Bot, Cpu, Eye, FlaskConical, Power, RefreshCw, Save, Users } from 'lucide-react';
 import { roomStatusLabel } from './services/roomUi';
+import { AppShell, Badge, Button, Card, InsetPanel, PageHeader, Select, StatTile, ThemeToggle, buttonClassName, confirmAction, deferSensitive, notify, type BadgeTone } from './ui';
 
 type PlayerSlot = 'alapha' | 'beta';
 
@@ -24,7 +25,7 @@ type AdminRoom = {
   members: Array<{ uuid: string; name: string; ready: boolean }>;
 };
 
-export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' | 'leaderboard') => void }) {
+export default function AdminPanel() {
   const [selection, setSelection] = useState<Record<PlayerSlot, string>>({ alapha: '1', beta: '2' });
   const [notice, setNotice] = useState('Loading saved channels…');
   const [testing, setTesting] = useState<string | null>(null);
@@ -72,7 +73,9 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
       body: JSON.stringify({ playerSlot: slot, channelId: selection[slot] }),
     });
     const data = await response.json().catch(() => ({}));
-    setNotice(response.ok ? `${slot === 'alapha' ? 'Alapha' : 'Beta'} now uses ${channelNames[selection[slot]]}.` : data.error || 'Unable to save configuration.');
+    const message = response.ok ? `${slot === 'alapha' ? 'Alapha' : 'Beta'} now uses ${channelNames[selection[slot]]}.` : data.error || 'Unable to save configuration.';
+    setNotice(message);
+    notify(response.ok ? { tone: 'success', title: 'Opponent routing saved', description: message } : { tone: 'destructive', title: 'Could not save routing', description: message });
   };
 
   const testChannel = async (channelId: string) => {
@@ -85,86 +88,97 @@ export default function AdminPanel({ onNavigate }: { onNavigate: (view: 'game' |
         body: JSON.stringify({ channelId }),
       });
       const data = await response.json().catch(() => ({}));
-      setNotice(response.ok ? `${channelNames[channelId]} is available (${data.totalTokens ?? 0} tokens recorded).` : data.error || `${channelNames[channelId]} test failed.`);
+      const message = response.ok ? `${channelNames[channelId]} is available (${data.totalTokens ?? 0} tokens recorded).` : data.error || `${channelNames[channelId]} test failed.`;
+      setNotice(message);
+      notify(response.ok ? { tone: 'success', title: 'Channel check passed', description: message } : { tone: 'destructive', title: 'Channel check failed', description: message });
     } catch {
-      setNotice(`${channelNames[channelId]} test could not reach the server.`);
+      const message = `${channelNames[channelId]} test could not reach the server.`;
+      setNotice(message);
+      notify({ tone: 'destructive', title: 'Channel check failed', description: message });
     } finally {
       setTesting(null);
     }
   };
 
+  // Confirm first, then close behind an undo window. The body re-throws on failure
+  // so the deferred notice never reports a failed close as success.
   const closeRoom = async (roomId: string) => {
+    const confirmed = await confirmAction({ title: 'Force-close this room?', description: 'Players are removed and the match ends for everyone.', confirmLabel: 'FORCE CLOSE', tone: 'destructive' });
+    if (!confirmed) return;
+    deferSensitive({
+      title: 'Force-closing room',
+      description: `Room ${roomId.slice(0, 8).toUpperCase()} closes when the timer ends.`,
+      successTitle: 'Room closed',
+      errorTitle: 'Could not close room',
+      run: () => closeRoomNow(roomId),
+    });
+  };
+
+  const closeRoomNow = async (roomId: string) => {
     setRoomBusy(roomId);
+    let failure: string | null = null;
     try {
       const response = await fetch(`/api/admin/rooms/${encodeURIComponent(roomId)}/close`, { method: 'POST' });
       const data = await response.json().catch(() => ({}));
-      setNotice(response.ok ? 'Room closed.' : data.error || 'Unable to close room.');
+      failure = response.ok ? null : data.error || 'Unable to close room.';
+      setNotice(failure ?? 'Room closed.');
       await loadRooms();
     } catch {
-      setNotice('Room close request could not reach the server.');
+      failure = 'Room close request could not reach the server.';
+      setNotice(failure);
     } finally {
       setRoomBusy(null);
     }
+    if (failure) throw new Error(failure);
+  };
+
+  const roomTone = (status: AdminRoom['status']): BadgeTone => {
+    if (status === 'started') return 'success';
+    if (status === 'paused') return 'warning';
+    if (status === 'closed') return 'neutral';
+    return 'primary';
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 text-slate-200 md:p-8">
-      <header className="mx-auto mb-8 flex max-w-5xl flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-5 sm:items-center">
-        <div className="flex items-center gap-3">
-          <ShieldCheck className="text-amber-500" size={30} />
-          <div>
-            <h1 className="font-mono text-2xl font-bold tracking-widest text-amber-500">ADMINDASH</h1>
+    <AppShell
+      nav={[
+        { key: 'home', label: 'Home', description: 'Back to home', icon: <ArrowLeft size={18} />, href: '/' },
+        { key: 'admin', label: 'Command desk', description: 'Control the table', icon: <Cpu size={18} />, active: true },
+      ]}
+      footer={<ThemeToggle />}
+    >
+      <PageHeader
+        eyebrow="Command desk / administrator"
+        title="Control the table."
+        description="Manage live rooms and set how Alapha and Beta respond in direct matches."
+        actions={<a href="/" className={buttonClassName('outline', 'default', 'h-10 px-3 text-xs font-semibold')}><ArrowLeft size={16} />Home</a>}
+      />
+
+      <div className="mb-5 grid gap-3 sm:grid-cols-3">
+        <StatTile icon={<Users size={18} />} label="Active rooms" value={activeRooms.length} />
+        <StatTile hero icon={<Bot size={18} />} label="Direct opponents" value={2} />
+        <StatTile icon={<Cpu size={18} />} label="Available channels" value={channels.length} />
+      </div>
+
+      <div className="grid items-start gap-5 lg:grid-cols-[1.2fr_.8fr]">
+        <Card className="p-5 sm:p-6">
+          <div className="mb-5 flex items-center justify-between gap-3"><div><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Room operations</p><h2 className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-tight"><Users size={20} className="text-primary" />Active rooms</h2></div><Button variant="outline" size="icon" onClick={() => void loadRooms().catch(error => setNotice(error.message))} aria-label="Refresh active rooms"><RefreshCw size={17} /></Button></div>
+          <div className="grid gap-3">
+            {activeRooms.map(room => { const status = roomStatusLabel(room.status); return <article key={room.id} className="rounded-xl border border-border/60 bg-background/50 p-4"><div className="flex flex-wrap items-start justify-between gap-2"><div><Badge tone={roomTone(room.status)}>{status.text}</Badge><p className="mt-2 font-mono text-micro uppercase tracking-[0.12em] text-muted-foreground">Room {room.id.slice(0, 8).toUpperCase()}</p></div><span className="text-xs tabular-nums text-muted-foreground">{room.members.length + room.aiNames.length}/{room.seatCount} seats</span></div><p className="mt-3 text-sm">Hosted by <strong className="font-semibold">{room.ownerName}</strong></p><p className="mt-1 break-words text-xs leading-5 text-muted-foreground">Players: {room.members.map(member => member.name).join(', ') || 'none'} · AI {room.aiNames.join(', ') || 'none'}</p><div className="mt-4 grid grid-cols-2 gap-2 sm:flex"><Button variant="outline" disabled={room.status === 'open'} onClick={() => { window.location.href = `/game/${encodeURIComponent(room.id)}?watch=admin`; }} className="min-h-11 gap-2 px-3 text-xs font-semibold"><Eye size={15} />Watch</Button><Button variant="outline" disabled={roomBusy === room.id} onClick={() => void closeRoom(room.id)} className="min-h-11 gap-2 px-3 text-xs font-semibold text-log-error hover:text-log-error"><Power size={15} />{roomBusy === room.id ? 'Closing…' : 'Close room'}</Button></div></article>; })}
+            {activeRooms.length === 0 && <p className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">No active rooms. New tables will appear here.</p>}
           </div>
+        </Card>
+
+        <div className="grid gap-5">
+          <Card className="p-5 sm:p-6">
+            <div className="mb-5"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Direct protocol</p><h2 className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-tight"><Cpu size={20} className="text-primary" />Opponent routing</h2></div>
+            <div className="space-y-3">{players.map(player => <div key={player.slot} className="rounded-xl border border-border/60 bg-background/50 p-4"><label htmlFor={`channel-${player.slot}`} className="mb-2 block text-sm font-semibold">{player.label}</label><div className="flex flex-col gap-2 sm:flex-row"><div className="min-w-0 flex-1"><Select id={`channel-${player.slot}`} value={selection[player.slot] || player.fallback} onChange={event => setSelection(current => ({ ...current, [player.slot]: event.target.value }))}>{channels.map(channel => <option key={channel.id} value={channel.id}>{channel.label}</option>)}</Select></div><Button onClick={() => void savePlayer(player.slot)} className="min-h-11 gap-2 px-4 text-sm font-bold"><Save size={16} />Save</Button></div></div>)}</div>
+          </Card>
+
+          <Card className="p-5 sm:p-6"><div className="mb-5"><p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Diagnostics</p><h2 className="mt-1 flex items-center gap-2 text-xl font-semibold tracking-tight"><FlaskConical size={20} className="text-primary" />Channel checks</h2></div><div className="space-y-2">{channels.map(channel => <InsetPanel key={channel.id} className="flex items-center justify-between gap-3 bg-background/50 p-3"><span className="text-sm font-semibold">{channel.label}</span><Button variant="outline" disabled={testing !== null} onClick={() => void testChannel(channel.id)} className="min-h-11 gap-2 px-3 text-xs font-semibold"><FlaskConical size={15} />{testing === channel.id ? 'Testing…' : 'Test'}<ArrowRight size={14} /></Button></InsetPanel>)}</div></Card>
         </div>
-        <button onClick={() => onNavigate('game')} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold transition-colors hover:bg-slate-800">
-          <ArrowLeft size={16} /> Game
-        </button>
-      </header>
-
-      <main className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-2">
-        <section className="lg:col-span-2 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
-          <div className="mb-5 flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Users className="text-amber-500" size={20} /><h2 className="font-mono font-bold tracking-wide">ACTIVE ROOMS</h2></div><button onClick={() => void loadRooms().catch(error => setNotice(error.message))} className="rounded-lg p-2 text-slate-400 hover:bg-slate-800" aria-label="Refresh active rooms"><RefreshCw size={17} /></button></div>
-          <div className="grid gap-3 md:grid-cols-2">
-            {activeRooms.map(room => { const status = roomStatusLabel(room.status); return <article key={room.id} className="rounded-xl border border-slate-800 bg-slate-950 p-4"><div className="flex items-start justify-between gap-3"><div><span className={`inline-flex rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold ${status.className}`}>{status.text}</span><p className="mt-2 font-mono text-xs text-slate-500">ROOM {room.id.slice(0, 8).toUpperCase()}</p></div><p className="text-xs text-slate-500">{room.members.length + room.aiNames.length}/{room.seatCount} seats</p></div><p className="mt-2 text-sm text-slate-300">Owner: <b className="text-white">{room.ownerName}</b></p><p className="mt-1 text-xs text-slate-500">Players: {room.members.map(member => member.name).join(', ') || 'none'} · AI {room.aiNames.join(', ') || 'none'}</p><div className="mt-4 grid grid-cols-2 gap-2 sm:flex"><button disabled={room.status === 'open'} onClick={() => { window.location.href = `/game/${encodeURIComponent(room.id)}?watch=admin`; }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-sky-500/40 px-3 text-xs font-bold text-sky-300 disabled:cursor-not-allowed disabled:opacity-40"><Eye size={15} /> WATCH</button><button disabled={roomBusy === room.id} onClick={() => void closeRoom(room.id)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-red-500/40 px-3 text-xs font-bold text-red-300 disabled:opacity-40"><Power size={15} /> {roomBusy === room.id ? 'CLOSING…' : 'CLOSE'}</button></div></article>; })}
-            {activeRooms.length === 0 && <p className="text-sm text-slate-500">No active rooms.</p>}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
-          <div className="mb-5 flex items-center gap-2"><Cpu className="text-amber-500" size={20} /><h2 className="font-mono font-bold tracking-wide">OPPONENT ROUTING</h2></div>
-          <div className="space-y-5">
-            {players.map(player => (
-              <div key={player.slot} className="rounded-xl border border-slate-800 bg-slate-950 p-4">
-                <label className="mb-3 block font-mono font-bold text-slate-200">{player.label}</label>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <select value={selection[player.slot] || player.fallback} onChange={event => setSelection(current => ({ ...current, [player.slot]: event.target.value }))} className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-500">
-                    {channels.map(channel => <option key={channel.id} value={channel.id}>{channel.label}</option>)}
-                  </select>
-                  <button onClick={() => savePlayer(player.slot)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-bold text-slate-950 transition-colors hover:bg-amber-400">
-                    <Save size={16} /> Save
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-xl shadow-black/20">
-          <div className="mb-5 flex items-center gap-2"><FlaskConical className="text-amber-500" size={20} /><h2 className="font-mono font-bold tracking-wide">CHANNEL HEALTH CHECK</h2></div>
-          <div className="space-y-3">
-            {channels.map(channel => (
-              <div key={channel.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
-                <span className="font-mono text-sm font-bold">{channel.label}</span>
-                <button disabled={testing !== null} onClick={() => testChannel(channel.id)} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-amber-500/50 px-3 py-2 text-sm font-bold text-amber-400 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50">
-                  <FlaskConical size={16} /> {testing === channel.id ? 'Testing…' : 'Test'}
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <p className="lg:col-span-2 rounded-lg border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300" aria-live="polite">{notice}</p>
-      </main>
-    </div>
+      </div>
+      <p className="mt-5 rounded-xl border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground" aria-live="polite">{notice}</p>
+    </AppShell>
   );
 }

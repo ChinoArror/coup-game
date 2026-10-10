@@ -3,10 +3,11 @@ import { GameState, GamePhase, ActionType, CardType, Player } from './types';
 import { initializeGame, handlePlayerAction, handleChallenge, handleBlock, handleLoseCard, handlePass } from './utils/gameEngine';
 import { getAIDecision } from './services/geminiService';
 import { canAccessAdminDash } from './services/adminAccess';
-import { createAIRequestContext, isAIRequestCurrent } from './services/aiDecisionGuard';
-import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, Eye, RefreshCw, Trophy, LogOut, History as HistoryIcon, Users } from 'lucide-react';
+import { createAIRequestContext, isAIRequestRelevant, type AIRequestContext } from './services/aiDecisionGuard';
+import { AppShell, Badge, Button, PageHeader, ThemeToggle, cn, confirmAction, deferSensitive } from './ui';
+import { Shield, LayoutDashboard, Zap, CircleDollarSign, AlertTriangle, RefreshCw, Trophy, LogOut, History as HistoryIcon, Users } from 'lucide-react';
 
-export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'game' | 'admin' | 'leaderboard' | 'history') => void, onLogout: () => void }) {
+export default function App({ role, onNavigate, onLogout }: { role: string, onNavigate: (v: 'admin' | 'leaderboard' | 'history') => void, onLogout: () => void }) {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [loading, setLoading] = useState(true);
   const [aiThinking, setAiThinking] = useState<string | null>(null);
@@ -15,24 +16,39 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   // Track leaderboard submission to avoid duplicates
   const submittedRef = useRef(false);
   const historySubmittedRef = useRef(false);
+  const aiTaskRef = useRef<{ context: AIRequestContext; controller: AbortController; timer: ReturnType<typeof setTimeout>; cancel: () => void } | null>(null);
 
-  // Initialize Game from DB
+  const startFresh = new URLSearchParams(window.location.search).get('new') === '1';
+
+  // Initialize or resume the direct match.
   useEffect(() => {
-    fetch('/api/process')
-      .then(res => res.json())
-      .then(data => {
-        if (data.state) {
-          setGameState({ ...data.state, revision: data.state.revision || 0 });
-        } else {
+    let active = true;
+    const initialize = async () => {
+      try {
+        if (startFresh) {
+          await fetch('/api/process', { method: 'DELETE' });
+          if (!active) return;
+          window.history.replaceState({}, '', '/play');
           setGameState(initializeGame());
+        } else {
+          const response = await fetch('/api/process');
+          const data = await response.json();
+          if (!active) return;
+          if (data.state && data.state.phase !== GamePhase.GAME_OVER) {
+            setGameState({ ...data.state, revision: data.state.revision || 0 });
+          } else {
+            setGameState(initializeGame());
+          }
         }
-        setLoading(false);
-      })
-      .catch(e => {
-        setGameState(initializeGame());
-        setLoading(false);
-      });
-  }, []);
+      } catch {
+        if (active) setGameState(initializeGame());
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void initialize();
+    return () => { active = false; };
+  }, [startFresh]);
 
   // Persist State to DB
   useEffect(() => {
@@ -89,31 +105,44 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   }, [gameState, loading]);
 
   // --- AI Game Loop ---
+  useEffect(() => () => { aiTaskRef.current?.cancel(); aiTaskRef.current = null; }, []);
+
   useEffect(() => {
+    const activeTask = aiTaskRef.current;
+    if (activeTask && (!gameState || !isAIRequestRelevant(gameState, activeTask.context))) {
+      activeTask.cancel();
+      aiTaskRef.current = null;
+      setAiThinking(null);
+    }
     if (!gameState || gameState.phase === GamePhase.GAME_OVER) return;
 
+    const currentPlayer = gameState.players[gameState.currentPlayerIndex];
+    const aiResponders = gameState.waitingForResponseFrom.filter(id => {
+      const player = gameState.players.find(candidate => candidate.id === id);
+      return player?.isAI;
+    });
+    const aiPlayer = gameState.phase === GamePhase.TURN_START && currentPlayer.isAI
+      ? currentPlayer
+      : aiResponders.length > 0 ? gameState.players.find(player => player.id === aiResponders[0]) : undefined;
+    if (!aiPlayer || aiTaskRef.current) return;
+
     const controller = new AbortController();
+    const context = createAIRequestContext(gameState, aiPlayer.id);
     let cancelled = false;
+    const task = {
+      context, controller,
+      timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      cancel: () => { cancelled = true; clearTimeout(task.timer); controller.abort(); },
+    };
+    aiTaskRef.current = task;
+    setAiThinking(aiPlayer.name);
 
     const processAI = async () => {
-      const currentPlayer = gameState.players[gameState.currentPlayerIndex];
-      const aiResponders = gameState.waitingForResponseFrom.filter(id => {
-        const p = gameState.players.find(pl => pl.id === id);
-        return p && p.isAI;
-      });
-
-      const aiPlayer = gameState.phase === GamePhase.TURN_START && currentPlayer.isAI
-        ? currentPlayer
-        : aiResponders.length > 0 ? gameState.players.find(player => player.id === aiResponders[0]) : undefined;
-      if (!aiPlayer) return;
-
-      const context = createAIRequestContext(gameState, aiPlayer.id);
-      setAiThinking(aiPlayer.name);
       try {
         const decision = await getAIDecision(gameState, aiPlayer, controller.signal);
         if (cancelled) return;
         setGameState(previous => {
-          if (!previous || !isAIRequestCurrent(previous, context)) return previous;
+          if (cancelled || !previous || !isAIRequestRelevant(previous, context)) return previous;
           if (previous.phase === GamePhase.TURN_START) {
             const action = decision.type === 'ACTION' ? decision.payload?.action : undefined;
             const target = decision.payload?.targetId;
@@ -137,16 +166,14 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
       } catch (error: any) {
         if (error?.name !== 'AbortError') console.error('AI decision failed', error);
       } finally {
-        if (!cancelled) setAiThinking(null);
+        if (aiTaskRef.current === task) {
+          aiTaskRef.current = null;
+          if (!cancelled) setAiThinking(null);
+        }
       }
     };
 
-    const timer = setTimeout(processAI, 1500); // Delay for realism
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      controller.abort();
-    };
+    task.timer = setTimeout(processAI, 1500); // Delay for realism
   }, [gameState]);
 
   // --- UI Handlers ---
@@ -192,25 +219,26 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
   };
 
   const resetGame = async () => {
-    await fetch('/api/process', { method: 'DELETE' });
-    submittedRef.current = false;
-    historySubmittedRef.current = false;
-    setGameState(initializeGame());
+    const startFresh = async () => {
+      await fetch('/api/process', { method: 'DELETE' });
+      submittedRef.current = false;
+      historySubmittedRef.current = false;
+      setGameState(initializeGame());
+    };
+    // A finished match has nothing to lose: start over without confirm/undo.
+    if (gameState?.phase === GamePhase.GAME_OVER) { await startFresh(); return; }
+    const confirmed = await confirmAction({ title: 'Start a new match?', description: 'Your current match progress will be discarded.', confirmLabel: 'NEW MATCH', tone: 'destructive' });
+    if (!confirmed) return;
+    deferSensitive({
+      title: 'Starting new match',
+      description: 'Your saved match is discarded when the timer ends.',
+      successTitle: 'New match started',
+      errorTitle: 'Could not start a new match',
+      run: startFresh,
+    });
   };
 
-  const doLogout = async () => {
-    try {
-      await fetch('/api/logout', { method: 'POST' });
-    } catch (e) {
-      console.error('Local logout failed', e);
-    }
-    // Synchronize logout with Auth Center as per way.md / way0.md
-    const SSO_URL = 'https://accounts.aryuki.com';
-    const afterLogoutUrl = encodeURIComponent(window.location.origin);
-    window.location.href = `${SSO_URL}/logout?redirect=${afterLogoutUrl}`;
-  };
-
-  if (loading || !gameState) return <div className="h-screen w-full bg-slate-900 flex items-center justify-center text-amber-500 font-mono animate-pulse tracking-widest">ESTABLISHING CONNECTION...</div>;
+  if (loading || !gameState) return <div className="flex min-h-dvh w-full items-center justify-center bg-background font-mono text-xs uppercase tracking-widest text-muted-foreground animate-pulse">ESTABLISHING CONNECTION...</div>;
 
   const human = gameState.players.find(p => p.id === 'human')!;
   const opponents = gameState.players.filter(p => p.id !== 'human');
@@ -235,64 +263,71 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
 
   const showBlockOptions = canBlockDuke || canBlockContessa || canBlockCaptain || canBlockAmbassador;
 
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-amber-500/30">
-      {/* Header */}
-      <header className="sticky top-0 z-50 flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/50 p-3 backdrop-blur-md sm:p-4">
-        <div className="flex shrink-0 items-center gap-2">
-          <Shield className="h-5 w-5 text-amber-500 sm:h-6 sm:w-6" />
-          <h1 className="font-mono text-lg font-bold tracking-wider text-amber-500">COUP</h1>
-        </div>
-        <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 sm:gap-2">
-          <a href="/game" className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-2 font-mono text-xs font-bold tracking-wider text-slate-300 transition-colors hover:bg-slate-800 hover:text-amber-500 sm:px-3" title="Multiplayer rooms">
-            <Users size={18} /><span className="hidden sm:inline">ROOMS</span>
-          </a>
-          {canAccessAdminDash(role) && (
-            <button onClick={() => onNavigate('admin')} className="inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-2 font-mono text-xs font-bold tracking-wider text-amber-500 transition-colors hover:bg-slate-800 sm:px-3" title="AdminDash">
-              <LayoutDashboard size={18} />
-              <span className="hidden sm:inline">ADMINDASH</span>
-            </button>
-          )}
-          <button onClick={() => onNavigate('history')} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Match History"><HistoryIcon size={18} /></button>
-          <button onClick={() => onNavigate('leaderboard')} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Leaderboard"><Trophy size={18} /></button>
-          <button onClick={resetGame} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-amber-500" title="Reset Game"><RefreshCw size={18} /></button>
-          <button onClick={doLogout} className="grid min-h-11 min-w-11 place-items-center rounded-full text-slate-400 transition-colors hover:bg-red-900/50 hover:text-red-500 sm:ml-2" title="Logout"><LogOut size={18} /></button>
-        </div>
-      </header>
+  const nav = [
+    { key: 'solo', label: 'Direct match', description: 'Alapha and Beta', icon: <Shield size={18} />, active: true },
+    { key: 'rooms', label: 'Game rooms', description: 'Create, join and watch tables', icon: <Users size={18} />, href: '/game' },
+    ...(canAccessAdminDash(role) ? [{ key: 'admin', label: 'Admin dashboard', description: 'Manage agents and active rooms', icon: <LayoutDashboard size={18} />, onClick: () => onNavigate('admin') }] : []),
+    { key: 'history', label: 'Match history', description: 'Review your previous tables', icon: <HistoryIcon size={18} />, onClick: () => onNavigate('history') },
+    { key: 'leaderboard', label: 'Leaderboard', description: 'See who holds the table', icon: <Trophy size={18} />, onClick: () => onNavigate('leaderboard') },
+  ];
 
-      <main className="max-w-5xl mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+  const footer = (
+    <div className="flex items-center justify-between gap-2">
+      <ThemeToggle />
+      <Button variant="ghost" size="icon" onClick={onLogout} className="text-muted-foreground hover:text-destructive" title="Log out" aria-label="Log out"><LogOut size={17} /></Button>
+    </div>
+  );
+
+  return (
+    <AppShell nav={nav} footer={footer}>
+      <PageHeader
+        eyebrow="Direct protocol / live match"
+        title="The table is yours."
+        description="Outmaneuver Alapha and Beta. Your progress saves as you play."
+        actions={<Button variant="outline" size="icon" onClick={() => void resetGame()} title="New match" aria-label="New match"><RefreshCw size={16} /></Button>}
+      />
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:gap-6">
 
         {/* Left Column: Game Board */}
-        <div className="lg:col-span-8 flex flex-col gap-6">
+        <div className="flex flex-col gap-6 lg:col-span-8">
 
           {/* Opponents Area */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-2 sm:gap-4">
             {opponents.map(opp => (
-              <div
+              <button
+                type="button"
                 key={opp.id}
+                disabled={!selectingTargetFor || opp.isEliminated}
+                aria-label={`${opp.name}, ${opp.coins} credits${opp.isEliminated ? ', eliminated' : ''}${selectingTargetFor ? ', choose as target' : ''}`}
                 onClick={() => selectingTargetFor && !opp.isEliminated ? onTargetSelect(opp.id) : undefined}
-                className={`relative p-4 rounded-xl border-2 transition-all 
-                  ${selectingTargetFor && !opp.isEliminated ? 'border-amber-500 cursor-pointer hover:bg-amber-900/30 animate-pulse shadow-[0_0_20px_rgba(245,158,11,0.4)]' : ''}
-                  ${!selectingTargetFor && opp.id === gameState.players[gameState.currentPlayerIndex].id ? 'border-amber-500 bg-amber-500/5 shadow-[0_0_15px_rgba(245,158,11,0.2)]' : 'border-slate-800 bg-slate-900'}
-                `}
+                className={cn(
+                  'ui-card relative w-full appearance-none rounded-2xl border bg-card p-3 text-left transition-all outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40 sm:p-5',
+                  selectingTargetFor && !opp.isEliminated
+                    ? 'cursor-pointer border-primary/60 bg-primary/5 ring-2 ring-primary/40'
+                    : !selectingTargetFor && opp.id === gameState.players[gameState.currentPlayerIndex].id
+                      ? 'border-primary/40 ring-2 ring-primary/50'
+                      : 'border-border/60',
+                  opp.isEliminated && 'opacity-50',
+                )}
               >
                 {aiThinking === opp.name && (
-                  <div className="absolute top-2 right-2 flex items-center gap-1 text-xs text-amber-400 animate-pulse">
+                  <Badge tone="primary" className="absolute right-2 top-2 animate-pulse gap-1">
                     <Zap size={12} /> Thinking...
-                  </div>
+                  </Badge>
                 )}
                 {selectingTargetFor && !opp.isEliminated && (
-                  <div className="absolute top-2 right-2 text-xs font-bold text-amber-500 uppercase tracking-widest bg-amber-950/80 px-2 py-1 rounded">
+                  <Badge tone="primary" className="absolute right-2 top-2 text-micro font-bold uppercase tracking-widest">
                     Target
-                  </div>
+                  </Badge>
                 )}
-                <div className="flex items-center gap-3 mb-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-slate-900 ${opp.isEliminated ? 'bg-slate-700' : 'bg-slate-200'}`}>
+                <div className="mb-3 flex items-center gap-3">
+                  <div className={cn('grid size-10 place-items-center rounded-full font-bold', opp.isEliminated ? 'bg-muted text-muted-foreground' : 'bg-foreground text-background')}>
                     {opp.name.charAt(0)}
                   </div>
-                  <div>
-                    <h3 className={`font-bold ${opp.isEliminated ? 'text-slate-500 line-through' : 'text-slate-100'}`}>{opp.name}</h3>
-                    <div className="flex items-center gap-2 text-xs text-amber-400 font-mono">
+                  <div className="min-w-0">
+                    <h3 className={cn('font-semibold', opp.isEliminated && 'text-muted-foreground line-through')}>{opp.name}</h3>
+                    <div className="flex items-center gap-2 font-mono text-xs tabular-nums text-log-warn">
                       <CircleDollarSign size={12} /> {opp.coins} Credits
                     </div>
                   </div>
@@ -300,40 +335,42 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
                 {/* Cards (Face Down unless revealed) */}
                 <div className="flex gap-2">
                   {opp.cards.map((card, idx) => (
-                    <div key={idx} className={`w-16 h-24 rounded border flex items-center justify-center text-xs text-center p-1 ${card.isRevealed ? 'bg-slate-800 border-slate-600 text-slate-400 grayscale' : 'bg-slate-700 border-slate-600 bg-[url("https://www.transparenttextures.com/patterns/carbon-fibre.png")]'}`}>
-                      {card.isRevealed ? card.type : <Shield className="text-slate-500 opacity-20" />}
+                    <div key={idx} className={cn('flex h-24 w-16 items-center justify-center rounded-lg border p-1 text-center text-xs', card.isRevealed ? 'border-border bg-muted text-muted-foreground grayscale' : 'border-border bg-gradient-to-br from-muted to-card')}>
+                      {card.isRevealed ? card.type : <Shield className="text-muted-foreground/40" />}
                     </div>
                   ))}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
 
           {/* Table / Status Area */}
-          <div className="bg-slate-900/50 rounded-2xl p-8 border border-slate-800 flex flex-col items-center justify-center min-h-[200px] text-center relative overflow-hidden">
+          <div aria-live="polite" className="ui-card relative flex min-h-[180px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-primary/20 bg-card bg-[radial-gradient(60%_80%_at_50%_0%,color-mix(in_oklab,var(--primary)_14%,transparent),transparent_70%)] p-5 text-center sm:p-8">
             {gameState.phase === GamePhase.GAME_OVER ? (
-              <div className="animate-bounce text-2xl font-bold text-amber-500 uppercase tracking-widest">
+              <div className="animate-bounce text-2xl font-bold uppercase tracking-widest text-log-warn">
                 GAME OVER. WINNER: {gameState.winner}
               </div>
             ) : (
               <>
-                <div className="text-slate-400 text-sm mb-2 uppercase tracking-widest font-mono">Current Protocol</div>
-                <div className="text-2xl md:text-3xl font-bold text-white mb-4">
+                <div className="mb-2 font-mono text-sm uppercase tracking-widest text-muted-foreground">Current Protocol</div>
+                <div className="mb-4 text-2xl font-semibold tracking-tight md:text-3xl">
                   {selectingTargetFor
                     ? `Select target for ${selectingTargetFor}...`
                     : gameState.pendingAction
                       ? `${gameState.players.find(p => p.id === gameState.pendingAction?.actorId)?.name} is attempting to ${gameState.pendingAction.action}...`
                       : gameState.pendingBlock
                         ? `${gameState.players.find(p => p.id === gameState.pendingBlock?.blockerId)?.name} blocks using ${gameState.pendingBlock.cardClaimed}`
-                        : `Waiting for ${gameState.players[gameState.currentPlayerIndex].name}...`
+                        : isMyTurn
+                          ? 'Your turn — choose an action.'
+                          : `Waiting for ${gameState.players[gameState.currentPlayerIndex].name}...`
                   }
                 </div>
                 {/* Visualizing the "Stack" */}
-                <div className="flex gap-4 mt-4">
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
                   {gameState.waitingForResponseFrom.map(id => (
-                    <div key={id} className="text-xs bg-slate-800 text-slate-300 px-3 py-1 rounded-full border border-slate-700 animate-pulse font-mono tracking-widest">
+                    <Badge key={id} tone="neutral" className="animate-pulse py-1 font-mono text-xs tracking-widest">
                       Waiting for {gameState.players.find(p => p.id === id)?.name}
-                    </div>
+                    </Badge>
                   ))}
                 </div>
               </>
@@ -341,41 +378,36 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           </div>
 
           {/* Human Player Area */}
-          <div className={`p-6 rounded-2xl border-2 transition-all ${isMyTurn ? 'border-amber-500 bg-slate-900/80' : 'border-slate-800 bg-slate-900'}`}>
-            <div className="flex justify-between items-end mb-6">
+          <div className={cn('ui-card rounded-2xl border p-5 transition-all sm:p-6', isMyTurn ? 'border-primary/40 ring-2 ring-primary/50' : 'border-border/60 bg-card')}>
+            <div className="mb-6 flex items-end justify-between gap-3">
               <div>
-                <h2 className="text-xl font-bold text-white mb-1">YOU (Agent)</h2>
-                <div className="flex items-center gap-2 text-amber-400 font-mono text-lg">
+                <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">Your influence</p>
+                <h2 className="mb-1 text-xl font-semibold tracking-tight">You</h2>
+                <div className="flex items-center gap-2 font-mono text-lg tabular-nums text-log-warn">
                   <CircleDollarSign size={18} /> {human.coins} Credits
                 </div>
               </div>
-              {mustLoseInfluence && <div className="text-red-500 font-bold animate-pulse flex items-center gap-2 font-mono"><AlertTriangle /> Choose card to lose</div>}
+              {mustLoseInfluence && <Badge tone="destructive" className="animate-pulse gap-2 font-mono text-sm"><AlertTriangle size={16} /> Choose card to lose</Badge>}
             </div>
 
             {/* My Cards */}
-            <div className="flex gap-4 mb-6">
+            <div className="mb-6 flex gap-4">
               {human.cards.map((card) => (
                 <button
                   key={card.id}
                   disabled={!mustLoseInfluence || card.isRevealed}
                   onClick={() => mustLoseInfluence && onLoseCard(card.id)}
-                  className={`w-24 h-36 rounded-lg border-2 flex flex-col items-center justify-between p-2 transition-all duration-300 
-                            ${card.isRevealed
-                      ? 'bg-slate-900 border-slate-700 text-slate-600 grayscale opacity-50'
-                      : mustLoseInfluence
-                        ? 'bg-red-900/20 border-red-500 hover:bg-red-900/40 cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.3)]'
-                        : 'bg-gradient-to-br from-slate-800 to-slate-900 border-slate-600'
-                    }`}
+                  className={cn('flex h-36 w-24 flex-col items-center justify-between rounded-lg border-2 bg-card p-2 outline-none transition-all duration-300 focus-visible:ring-[3px] focus-visible:ring-ring/40', card.isRevealed ? 'border-border bg-muted opacity-50 grayscale' : mustLoseInfluence ? 'cursor-pointer border-destructive ring-2 ring-destructive/40 hover:bg-destructive/5' : 'border-border')}
                 >
-                  <span className="text-xs font-mono opacity-50">{card.isRevealed ? 'LOST' : 'ACTIVE'}</span>
-                  <div className="font-bold text-sm text-center">{card.type}</div>
+                  <Badge tone={card.isRevealed ? 'neutral' : 'success'} className="font-mono text-micro uppercase tracking-wider">{card.isRevealed ? 'LOST' : 'ACTIVE'}</Badge>
+                  <div className={cn('text-center text-sm font-bold', card.isRevealed && 'line-through')}>{card.type}</div>
                   {getCardIcon(card.type)}
                 </button>
               ))}
             </div>
 
             {/* Controls */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-4 sm:gap-3">
               {/* 1. Turn Actions */}
               {isMyTurn && gameState.phase === GamePhase.TURN_START && !human.isEliminated && (
                 <>
@@ -388,9 +420,9 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
                   <ActionButton label="Coup (7)" disabled={selectingTargetFor !== null || human.coins < 7} onClick={() => onAction(ActionType.COUP)} sub="Unblockable" color="red" strong />
 
                   {selectingTargetFor && (
-                    <button onClick={cancelTargetSelection} className="col-span-2 md:col-span-4 mt-2 bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 rounded-lg border border-slate-600 uppercase text-sm tracking-widest">
+                    <Button variant="outline" onClick={cancelTargetSelection} className="col-span-2 mt-2 font-bold uppercase tracking-widest md:col-span-4">
                       Cancel Target Selection
-                    </button>
+                    </Button>
                   )}
                 </>
               )}
@@ -400,16 +432,16 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
                 <>
                   {/* Contextual Challenge Button */}
                   {((isActionPhase && incomingAction !== 'FOREIGN AID' && incomingAction !== 'FOREIGN_AID') || isBlockPhase) && (
-                    <button onClick={onChallenge} className="col-span-2 bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-lg flex flex-col items-center shadow-lg shadow-red-900/20 border border-red-500">
+                    <Button variant="destructive" onClick={onChallenge} className="col-span-2 h-auto min-h-12 flex-col py-3 font-bold">
                       <span>CHALLENGE!</span>
                       <span className="text-xs font-normal opacity-80">They are lying!</span>
-                    </button>
+                    </Button>
                   )}
 
                   {/* Contextual Block Buttons */}
                   {showBlockOptions && (
-                    <div className="col-span-4 grid grid-cols-2 gap-2 my-2 border-t border-b border-slate-800 py-2">
-                      <div className="col-span-2 text-center text-xs text-slate-400 uppercase tracking-widest mb-1">Counter Measures</div>
+                    <div className="col-span-2 my-2 grid grid-cols-2 gap-2 rounded-xl bg-muted/40 p-2 md:col-span-4">
+                      <div className="col-span-2 mb-1 text-center text-xs uppercase tracking-widest text-muted-foreground">Counter Measures</div>
                       {canBlockDuke && <ActionButton label="Block with Duke" onClick={() => onBlock(CardType.DUKE)} color="purple" />}
                       {canBlockContessa && <ActionButton label="Block with Contessa" onClick={() => onBlock(CardType.CONTESSA)} color="red" />}
                       {canBlockCaptain && <ActionButton label="Block with Captain" onClick={() => onBlock(CardType.CAPTAIN)} color="green" />}
@@ -418,9 +450,9 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
                   )}
 
                   {/* Pass/Allow Button */}
-                  <button onClick={onPass} className="col-span-2 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-lg border border-slate-600">
+                  <Button variant="secondary" onClick={onPass} className="col-span-2 py-3 font-bold">
                     PASS / ALLOW
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -428,17 +460,17 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
         </div>
 
         {/* Right Column: Game Log */}
-        <div className="lg:col-span-4 h-full flex flex-col gap-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex-1 flex flex-col max-h-[600px]">
-            <h3 className="text-slate-400 font-mono text-xs uppercase tracking-widest mb-4 border-b border-slate-800 pb-2">Mission Log</h3>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+        <div className="flex h-full flex-col gap-4 lg:col-span-4">
+          <div className="ui-card flex max-h-[600px] flex-1 flex-col rounded-2xl border border-border/60 bg-card p-5">
+            <h3 className="mb-4 font-mono text-xs uppercase tracking-widest text-muted-foreground">Mission Log</h3>
+            <div className="flex-1 space-y-2 overflow-y-auto pr-2">
               {gameState.logs.slice().reverse().map((log) => (
-                <div key={log.id} className={`text-sm p-2 rounded ${log.type === 'alert' ? 'bg-amber-900/20 text-amber-200 border-l-2 border-amber-500' :
-                  log.type === 'danger' ? 'bg-red-900/20 text-red-200 border-l-2 border-red-500' :
-                    log.type === 'success' ? 'bg-green-900/20 text-green-200 border-l-2 border-green-500' :
-                      'text-slate-400'
-                  }`}>
-                  <span className="text-xs opacity-50 font-mono mr-2">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                <div key={log.id} className={cn('anim-rise rounded-lg px-2.5 py-2 text-sm', log.type === 'alert' ? 'border-l-2 border-warning bg-warning/10 text-log-warn' :
+                  log.type === 'danger' ? 'border-l-2 border-destructive bg-destructive/10 text-log-error' :
+                    log.type === 'success' ? 'border-l-2 border-success bg-success/10 text-log-success' :
+                      'text-muted-foreground'
+                  )}>
+                  <span className="mr-2 font-mono text-micro tabular-nums opacity-60">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
                   {log.text}
                 </div>
               ))}
@@ -446,55 +478,54 @@ export default function App({ role, onNavigate, onLogout }: { role: string, onNa
           </div>
 
           {/* Rules Hint */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 text-xs text-slate-500 space-y-2">
-            <p><span className="text-purple-400 font-bold">Duke</span>: Tax (+3), Blocks Foreign Aid</p>
-            <p><span className="text-red-400 font-bold">Assassin</span>: Kill (-3 coins)</p>
-            <p><span className="text-green-400 font-bold">Captain</span>: Steal (+2), Blocks Steal</p>
-            <p><span className="text-blue-400 font-bold">Ambassador</span>: Exchange cards, Blocks Steal</p>
-            <p><span className="text-slate-200 font-bold">Contessa</span>: Blocks Assassination</p>
+          <div className="ui-card space-y-2 rounded-2xl border border-border/60 bg-card p-5 text-xs text-muted-foreground">
+            <p><span className="font-bold text-role-duke">Duke</span>: Tax (+3), Blocks Foreign Aid</p>
+            <p><span className="font-bold text-role-assassin">Assassin</span>: Kill (-3 coins)</p>
+            <p><span className="font-bold text-role-captain">Captain</span>: Steal (+2), Blocks Steal</p>
+            <p><span className="font-bold text-role-ambassador">Ambassador</span>: Exchange cards, Blocks Steal</p>
+            <p><span className="font-bold text-role-contessa">Contessa</span>: Blocks Assassination</p>
           </div>
         </div>
 
-      </main>
-    </div>
+      </div>
+    </AppShell>
   );
 }
 
 // Subcomponents
 
 const ActionButton = ({ label, sub, onClick, disabled, color = 'slate', strong }: { label: string, sub?: string, onClick: () => void, disabled?: boolean, color?: string, strong?: boolean }) => {
-  const colors: any = {
-    slate: 'bg-slate-800 hover:bg-slate-700 border-slate-600',
-    purple: 'bg-purple-900/30 hover:bg-purple-900/50 border-purple-500/50 text-purple-200',
-    red: 'bg-red-900/30 hover:bg-red-900/50 border-red-500/50 text-red-200',
-    green: 'bg-green-900/30 hover:bg-green-900/50 border-green-500/50 text-green-200',
-    blue: 'bg-blue-900/30 hover:bg-blue-900/50 border-blue-500/50 text-blue-200',
+  const colors: Record<string, string> = {
+    slate: 'border-border bg-card text-foreground hover:bg-accent',
+    purple: 'border-role-duke/30 bg-role-duke/10 text-role-duke hover:bg-role-duke/15',
+    red: 'border-destructive/30 bg-destructive/10 text-log-error hover:bg-destructive/15',
+    green: 'border-role-captain/30 bg-role-captain/10 text-role-captain hover:bg-role-captain/15',
+    blue: 'border-role-ambassador/30 bg-role-ambassador/10 text-role-ambassador hover:bg-role-ambassador/15',
   };
 
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`
-                relative p-3 rounded-lg border flex flex-col items-start justify-center transition-all
-                ${disabled ? 'opacity-30 cursor-not-allowed grayscale' : ''}
-                ${colors[color]}
-                ${strong ? 'ring-1 ring-white/20' : ''}
-            `}
+      className={cn(
+        'relative flex min-h-14 flex-col items-start justify-center rounded-xl border p-3 text-left outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-40 disabled:grayscale',
+        colors[color],
+        strong && 'ring-1 ring-ring/40',
+      )}
     >
-      <span className="font-bold text-sm">{label}</span>
-      {sub && <span className="text-[10px] opacity-70">{sub}</span>}
+      <span className="text-sm font-bold">{label}</span>
+      {sub && <span className="text-micro opacity-75">{sub}</span>}
     </button>
   )
 }
 
 const getCardIcon = (type: CardType) => {
   switch (type) {
-    case CardType.DUKE: return <div className="text-purple-400 text-xs mt-2 uppercase tracking-wider">Taxation</div>;
-    case CardType.ASSASSIN: return <div className="text-red-400 text-xs mt-2 uppercase tracking-wider">Lethal</div>;
-    case CardType.CAPTAIN: return <div className="text-green-400 text-xs mt-2 uppercase tracking-wider">Thievery</div>;
-    case CardType.AMBASSADOR: return <div className="text-blue-400 text-xs mt-2 uppercase tracking-wider">Swapping</div>;
-    case CardType.CONTESSA: return <div className="text-orange-400 text-xs mt-2 uppercase tracking-wider">Defense</div>;
+    case CardType.DUKE: return <div className="mt-2 text-xs uppercase tracking-wider text-role-duke">Taxation</div>;
+    case CardType.ASSASSIN: return <div className="mt-2 text-xs uppercase tracking-wider text-role-assassin">Lethal</div>;
+    case CardType.CAPTAIN: return <div className="mt-2 text-xs uppercase tracking-wider text-role-captain">Thievery</div>;
+    case CardType.AMBASSADOR: return <div className="mt-2 text-xs uppercase tracking-wider text-role-ambassador">Swapping</div>;
+    case CardType.CONTESSA: return <div className="mt-2 text-xs uppercase tracking-wider text-role-contessa">Defense</div>;
     default: return null;
   }
 }

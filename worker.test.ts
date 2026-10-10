@@ -323,6 +323,29 @@ describe('AI administration and quota routing', () => {
 });
 
 describe('multiplayer room lifecycle', () => {
+  it('lets a joined guest reopen a one-use invitation while keeping it unavailable to other guests', async () => {
+    const { env } = createEnvironment();
+    installFetchMock();
+    const ctx = { waitUntil() {} } as any;
+    const created = await worker.fetch(request('/api/rooms', 'admin', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ seatCount: 3, aiChannels: ['1'] }),
+    }), env, ctx);
+    const room = await created.json() as any;
+    const token = new URL(room.invite.url).searchParams.get('invite')!;
+
+    const joined = await worker.fetch(request(`/api/rooms/${room.id}/join`, 'user', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteToken: token }),
+    }, 'guest-uuid'), env, ctx);
+    expect(joined.status).toBe(200);
+
+    const reopened = await worker.fetch(request(`/api/rooms/invite/${token}`, 'user', {}, 'guest-uuid'), env, ctx);
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({ room: { id: room.id }, canJoin: false, canWatch: false });
+    expect((await worker.fetch(request(`/api/rooms/invite/${token}`, 'user', {}, 'other-uuid'), env, ctx)).status).toBe(404);
+  });
+
   it('health-checks selected room AIs for the owner before creating and starts only after ready', async () => {
     const { env, db } = createEnvironment();
     const { quotaChecks, consumeBodies } = installFetchMock();

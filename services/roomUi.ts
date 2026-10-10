@@ -26,6 +26,31 @@ export const filterRoomSummaries = <T extends Pick<RoomSummary, 'status'>>(rooms
 
 export const roomAiLabels = (channels: readonly string[]) => channels.map(channel => AI_LABELS[channel] || channel);
 
+export type RoomSeatSummary = {
+  totalSeats: number;
+  aiSeats: number;
+  humanSeats: number;
+  openGuestSeats: number;
+  valid: boolean;
+};
+
+export function summarizeRoomSeats(seatCount: number, aiChannels: readonly string[], occupiedHumanSeats = 1): RoomSeatSummary {
+  const aiSeats = aiChannels.length;
+  const humanSeats = Math.max(0, seatCount - aiSeats);
+  const openGuestSeats = Math.max(0, humanSeats - occupiedHumanSeats);
+  const uniqueChannels = new Set(aiChannels).size === aiSeats;
+  const validChannels = aiChannels.every(channel => Object.hasOwn(AI_LABELS, channel));
+
+  return {
+    totalSeats: seatCount,
+    aiSeats,
+    humanSeats,
+    openGuestSeats,
+    valid: Number.isInteger(seatCount) && seatCount >= 3 && seatCount <= 6 && aiSeats <= 3 &&
+      uniqueChannels && validChannels && humanSeats >= 1 && occupiedHumanSeats >= 1 && occupiedHumanSeats <= humanSeats,
+  };
+}
+
 export const roomStatusLabel = (status: RoomStatus) => {
   if (status === 'started') return { text: 'STARTED', className: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' };
   if (status === 'paused') return { text: 'PAUSED', className: 'border-amber-500/40 bg-amber-500/10 text-amber-300' };

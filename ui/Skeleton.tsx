@@ -1,0 +1,6 @@
+import type { HTMLAttributes } from 'react';
+import { cn } from './cn';
+
+export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div aria-hidden="true" className={cn('block animate-pulse rounded-md bg-muted', className)} {...props} />;
+}

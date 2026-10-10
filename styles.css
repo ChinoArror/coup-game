@@ -1,0 +1,556 @@
+/* Coup: Shadow Protocol styles. Base: SnowLuma design tokens (references/tokens.css) with
+   the adaptive cursor, context menu, slider and grid sections removed, plus game-specific motion. */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ──────────────────────────────────────────────
+   Theme tokens (sky-blue accent)
+   ────────────────────────────────────────────── */
+:root {
+  --radius: 0.75rem;
+
+  --background: oklch(99% 0.004 240);
+  --foreground: oklch(20% 0.03 250);
+
+  --card: oklch(100% 0 0);
+  --card-foreground: oklch(20% 0.03 250);
+
+  --popover: oklch(100% 0 0);
+  --popover-foreground: oklch(20% 0.03 250);
+
+  /* sky-500 */
+  --primary: oklch(68.5% 0.155 230);
+  --primary-foreground: oklch(99% 0.005 240);
+
+  --secondary: oklch(96% 0.012 240);
+  --secondary-foreground: oklch(25% 0.03 250);
+
+  --muted: oklch(96% 0.012 240);
+  --muted-foreground: oklch(50% 0.02 250);
+
+  --accent: oklch(94% 0.03 230);
+  --accent-foreground: oklch(35% 0.07 230);
+
+  --destructive: oklch(60% 0.22 27);
+  --destructive-foreground: oklch(99% 0.005 240);
+
+  --success: oklch(70% 0.15 160);
+  --warning: oklch(78% 0.16 80);
+
+  /* Log-level TEXT colors. The accent tokens above are tuned as fills (white
+     text on them passes AA); as small text on the light canvas they fail WCAG
+     AA (info 2.6:1, success 2.4:1, warn 2.0:1, error 4.3:1). These darker
+     variants restore >=4.5:1 for the log viewer without darkening the app-wide
+     accent. Dark theme keeps the bright values (they already pass on dark). */
+  --log-info: oklch(50% 0.155 230);
+  --log-success: oklch(50% 0.15 160);
+  --log-warn: oklch(52% 0.16 80);
+  --log-error: oklch(55% 0.22 27);
+
+  --border: oklch(92% 0.01 240);
+  --input: oklch(94% 0.012 240);
+  --ring: oklch(68.5% 0.155 230);
+
+  --sidebar: oklch(94% 0.008 240);
+  --sidebar-foreground: oklch(25% 0.03 250);
+  --sidebar-primary: oklch(68.5% 0.155 230);
+  --sidebar-primary-foreground: oklch(99% 0.005 240);
+  --sidebar-accent: oklch(90% 0.025 230);
+  --sidebar-accent-foreground: oklch(35% 0.08 230);
+  --sidebar-border: oklch(92% 0.01 240);
+  --sidebar-ring: oklch(68.5% 0.155 230);
+  --media-outline: oklch(0% 0 0 / 0.1);
+
+  /* Cards need depth without turning every surface into a hard outlined box.
+     The short shadow separates the edge; the long, faint shadow establishes
+     elevation without looking like a floating modal. */
+  --shadow-card:
+    0 1px 2px oklch(20% 0.03 250 / 0.05),
+    0 12px 32px -22px oklch(20% 0.03 250 / 0.28);
+}
+
+.dark {
+  --background: oklch(16% 0.02 250);
+  --foreground: oklch(96% 0.01 240);
+
+  --card: oklch(20% 0.025 250);
+  --card-foreground: oklch(96% 0.01 240);
+
+  --popover: oklch(20% 0.025 250);
+  --popover-foreground: oklch(96% 0.01 240);
+
+  --primary: oklch(75% 0.14 230);
+  --primary-foreground: oklch(15% 0.02 250);
+
+  --secondary: oklch(25% 0.025 250);
+  --secondary-foreground: oklch(96% 0.01 240);
+
+  --muted: oklch(24% 0.02 250);
+  --muted-foreground: oklch(68% 0.02 240);
+
+  --accent: oklch(28% 0.05 230);
+  --accent-foreground: oklch(85% 0.1 230);
+
+  --destructive: oklch(62% 0.2 27);
+  --destructive-foreground: oklch(98% 0.005 240);
+
+  --success: oklch(72% 0.15 160);
+  --warning: oklch(80% 0.16 80);
+
+  /* On the dark canvas the bright accents already clear AA as text, so the
+     log-level text tokens mirror them (see the :root note above). */
+  --log-info: oklch(75% 0.14 230);
+  --log-success: oklch(72% 0.15 160);
+  --log-warn: oklch(80% 0.16 80);
+  --log-error: oklch(62% 0.2 27);
+
+  --border: oklch(28% 0.02 250);
+  --input: oklch(26% 0.02 250);
+  --ring: oklch(75% 0.14 230);
+
+  --sidebar: oklch(12% 0.018 250);
+  --sidebar-foreground: oklch(92% 0.01 240);
+  --sidebar-primary: oklch(75% 0.14 230);
+  --sidebar-primary-foreground: oklch(15% 0.02 250);
+  --sidebar-accent: oklch(28% 0.05 230);
+  --sidebar-accent-foreground: oklch(85% 0.1 230);
+  --sidebar-border: oklch(26% 0.02 250);
+  --sidebar-ring: oklch(75% 0.14 230);
+  --media-outline: oklch(100% 0 0 / 0.12);
+
+  --shadow-card:
+    0 1px 2px oklch(0% 0 0 / 0.36),
+    0 16px 38px -24px oklch(0% 0 0 / 0.72),
+    inset 0 1px oklch(100% 0 0 / 0.025);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-log-info: var(--log-info);
+  --color-log-success: var(--log-success);
+  --color-log-warn: var(--log-warn);
+  --color-log-error: var(--log-error);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* Dense metadata is the only content allowed below Tailwind's 12px text-xs
+     floor. Named tokens make that exception explicit at each call site. */
+  --text-meta: 0.6875rem;
+  --text-meta--line-height: 1rem;
+  --text-micro: 0.625rem;
+  --text-micro--line-height: 0.875rem;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  html, body, #root {
+    height: 100%;
+    height: 100dvh;
+    min-height: -webkit-fill-available;
+  }
+  body {
+    margin: 0;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    line-height: 1.5;
+  }
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 28%, transparent);
+    color: var(--foreground);
+  }
+  /* Density: compact tightens the global rhythm a touch. Use rem (not px) so
+     it still tracks the UI-scale root font-size. */
+  html[data-density="compact"] body {
+    font-size: 0.84rem;
+    line-height: 1.45;
+  }
+  html[data-density="compact"] {
+    --tw-leading: 1.4;
+  }
+}
+
+@layer components {
+  /* Shared media keyline: an inset outline remains visible on both pale and
+     dark images without changing layout or shrinking the image content. */
+  .media-outline {
+    outline: 1px solid var(--media-outline);
+    outline-offset: -1px;
+  }
+
+  .ui-card {
+    box-shadow: var(--shadow-card);
+  }
+
+  /* Skeleton Swap reserves a fixed box by default. Data panels that can grow
+     after the swap keep the original timing/motion but release that box once
+     real content is present, so the component never becomes an inner scroller. */
+  .skeleton-swap-fluid {
+    height: auto !important;
+    overflow-y: visible !important;
+  }
+
+  .skeleton-swap-fill {
+    height: 100% !important;
+    overflow-y: visible !important;
+  }
+
+  /* Triangles and forward-pointing glyphs carry more visual mass on the left.
+     A one-pixel optical correction centers them without changing hit areas. */
+  .optical-forward {
+    position: relative;
+    left: 1px;
+  }
+
+  .optical-back {
+    position: relative;
+    right: 1px;
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Customization layers (driven by ThemeContext via
+   data-* attributes + CSS vars on <html>)
+   ────────────────────────────────────────────── */
+
+/* Dark intensity: "black" pushes the dark palette toward true black for
+   OLED screens. Only meaningful in dark mode. */
+.dark[data-dark-intensity="black"] {
+  --background: oklch(0% 0 0);
+  --foreground: oklch(97% 0.01 240);
+  --card: oklch(13% 0.008 250);
+  --card-foreground: oklch(96% 0.01 240);
+  --popover: oklch(13% 0.008 250);
+  --popover-foreground: oklch(96% 0.01 240);
+  --secondary: oklch(17% 0.012 250);
+  --muted: oklch(15% 0.01 250);
+  --muted-foreground: oklch(66% 0.02 240);
+  --border: oklch(22% 0.012 250);
+  --input: oklch(19% 0.012 250);
+}
+/* OLED's near-black sidebar applies only when the sidebar follows the canvas;
+   scoping it to "follow" lets the panel/accent styles below win in OLED too
+   (otherwise this higher-specificity block would override them). */
+.dark[data-dark-intensity="black"][data-sidebar-style="follow"] {
+  --sidebar: oklch(5% 0.006 250);
+  --sidebar-border: oklch(20% 0.012 250);
+}
+
+/* Sidebar style: how distinct the sidebar surface is from the main canvas. */
+html[data-sidebar-style="panel"] {
+  --sidebar: color-mix(in oklab, var(--card) 90%, var(--primary) 4%);
+}
+html[data-sidebar-style="accent"] {
+  --sidebar: color-mix(in oklab, var(--background) 76%, var(--primary) 24%);
+  --sidebar-foreground: color-mix(in oklab, var(--foreground) 85%, var(--primary));
+  --sidebar-border: color-mix(in oklab, var(--border) 60%, var(--primary) 40%);
+}
+
+/* High contrast: strengthen borders + dim-text contrast for legibility. */
+html[data-contrast="high"] {
+  --border: color-mix(in oklab, var(--foreground) 55%, var(--border));
+  --input: color-mix(in oklab, var(--foreground) 45%, var(--input));
+  --muted-foreground: color-mix(in oklab, var(--foreground) 78%, var(--muted-foreground));
+  --sidebar-border: color-mix(in oklab, var(--foreground) 55%, var(--sidebar-border));
+}
+
+/* Kiosk ("展示模式"): hide any in-content edit/config entry points marked with
+   data-kiosk-hide (the chrome itself is removed in MainLayout). */
+html[data-kiosk="1"] [data-kiosk-hide] {
+  display: none !important;
+}
+
+/* Log stream row entrance — a subtle fade + rise for a genuinely new tail line.
+   transform+opacity only (composited, cheap at high rate); the virtual row's own
+   translateY positioning lives on the OUTER wrapper, so this INNER animation
+   never fights it or perturbs measureElement. Applied only to real arrivals and
+   auto-suppressed in bursts; gated in JS on reduce/disable-motion, and the rules
+   below also neutralise it. */
+@keyframes log-row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.log-row-in {
+  animation: log-row-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Soft edge fade for the log scroll viewport — rows dissolve at a boundary as
+   they scroll past it (Apple-style). Scroll-position-aware: each edge only fades
+   when there is actually hidden content in that direction, so a fully-scrolled
+   top/bottom row is never dimmed (readability). A static mask, not motion: kept
+   under reduce-motion, dropped only on the hard 关闭全部动效 switch. */
+.log-fade-top,
+.log-fade-bottom,
+.log-fade-both {
+  -webkit-mask-image: none;
+  mask-image: none;
+  -webkit-mask-source-type: alpha;
+  mask-mode: alpha;
+}
+.log-fade-top {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, white 14px, white 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, white 14px, white 100%);
+}
+.log-fade-bottom {
+  -webkit-mask-image: linear-gradient(to bottom, white 0, white calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, white 0, white calc(100% - 18px), transparent 100%);
+}
+.log-fade-both {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, white 14px, white calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, white 14px, white calc(100% - 18px), transparent 100%);
+}
+
+/* Reduce motion: a CSS fallback for non-Framer transitions/animations.
+   Framer Motion itself is handled by <MotionConfig reducedMotion>. */
+html[data-reduce-motion="1"] *,
+html[data-reduce-motion="1"] *::before,
+html[data-reduce-motion="1"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+/* A notice countdown encodes remaining time, so it keeps its real length under
+   reduce-motion. The bar also sets --countdown-ms inline to carry that length. */
+html[data-reduce-motion="1"] .anim-countdown {
+  animation-duration: var(--countdown-ms, 5s) !important;
+}
+
+/* Press feedback is useful motion, but never essential. The app-level reduce
+   switch and the OS preference both disable it without changing hit areas. */
+html[data-reduce-motion="1"] :is(.ui-button, [data-press-scale]) {
+  scale: 1 !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.ui-button, [data-press-scale]) { scale: 1 !important; }
+}
+
+/* Keep shared form controls at 16px on coarse pointers even when a page
+   supplies a smaller desktop typography utility. This prevents iOS Safari
+   from zooming the viewport when the control receives focus. */
+@media (hover: none) and (pointer: coarse) {
+  .ui-button {
+    min-width: max(2.75rem, 44px);
+    min-height: max(2.75rem, 44px);
+  }
+  .ui-button-icon { min-width: max(2.75rem, 44px); }
+  .topbar-control {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  input,
+  select,
+  textarea,
+  [data-ui-control],
+  [contenteditable]:not([contenteditable="false"]) {
+    min-height: max(2.75rem, 44px);
+    font-size: max(1rem, 16px);
+  }
+}
+
+/* 关闭全部动效: harder than reduce — remove CSS animations outright (e.g. the
+   pulsing status dots) rather than just collapsing their duration. Framer
+   entrance fades are gated in components on `disableMotion`. */
+html[data-no-motion="1"] *:not(.animate-spin):not(.anim-countdown),
+html[data-no-motion="1"] *::before,
+html[data-no-motion="1"] *::after {
+  /* Exclude .animate-spin: loading spinners encode "busy", not decoration —
+     freezing them reads as a hang. Everything else (e.g. pulse dots) stops. */
+  animation: none !important;
+}
+
+/* Hide the browser-native password reveal / clear controls (Edge & IE render
+   an extra eye / × on inputs) so only our own show-password toggle shows. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+input::-webkit-credentials-auto-fill-button,
+input::-webkit-contacts-auto-fill-button,
+input::-webkit-strong-password-auto-fill-button {
+  visibility: hidden;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+input::-webkit-search-decoration,
+input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* ──────────────────────────────────────────────
+   Light/dark reveal — a circular wipe from the click point, via the View
+   Transitions API (Chromium/Edge/Safari; Firefox falls back to an instant
+   swap). Gated in JS on the motion settings, so this only runs when allowed.
+   ────────────────────────────────────────────── */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) { z-index: 0; }
+::view-transition-new(root) {
+  z-index: 1;
+  animation: snowluma-theme-reveal 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes snowluma-theme-reveal {
+  from {
+    -webkit-clip-path: circle(0px at var(--vt-x, 50%) var(--vt-y, 50%));
+    clip-path: circle(0px at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+  to {
+    -webkit-clip-path: circle(var(--vt-r, 150%) at var(--vt-x, 50%) var(--vt-y, 50%));
+    clip-path: circle(var(--vt-r, 150%) at var(--vt-x, 50%) var(--vt-y, 50%));
+  }
+}
+html[data-reduce-motion="1"]::view-transition-old(root),
+html[data-reduce-motion="1"]::view-transition-new(root) {
+  animation: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Native scrollbars — themed to match. Radix ScrollArea hides its own
+   native bar and renders a custom thumb, so this only styles plain overflow
+   containers (textareas, <pre>, the settings rail, grid widget bodies…).
+   ────────────────────────────────────────────── */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 22%, transparent) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--foreground) 22%, transparent);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--foreground) 38%, transparent);
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ──────────────────────────────────────────────
+   Login background — wavy SVG line field (see <LoginWaves>). Themed to the
+   accent so it reads as a subtle decorative backdrop behind the login card.
+   ────────────────────────────────────────────── */
+.login-waves {
+  color: color-mix(in oklab, var(--primary) 26%, transparent);
+}
+.login-waves path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1px;
+}
+
+
+/* ──────────────────────────────────────────────
+   Coup game motion (named easings from style/references/motion.md)
+   ────────────────────────────────────────────── */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes notice-countdown {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+.anim-rise {
+  animation: rise-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.anim-countdown {
+  transform-origin: left center;
+  animation: notice-countdown 5s linear forwards;
+}
+.ease-enter {
+  transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1);
+}
+.ease-leave {
+  transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
+}
+.ease-page {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-rise { animation: none; }
+}
+
+/* ──────────────────────────────────────────────
+   Character identity colors (card names, captions, log accents).
+   Light values are darkened so they read as text on the light canvas.
+   ────────────────────────────────────────────── */
+:root {
+  --role-duke: oklch(50% 0.18 300);
+  --role-assassin: oklch(52% 0.2 25);
+  --role-captain: oklch(52% 0.13 155);
+  --role-ambassador: oklch(50% 0.16 255);
+  --role-contessa: oklch(56% 0.15 55);
+}
+.dark {
+  --role-duke: oklch(78% 0.13 300);
+  --role-assassin: oklch(74% 0.17 25);
+  --role-captain: oklch(78% 0.14 155);
+  --role-ambassador: oklch(78% 0.13 255);
+  --role-contessa: oklch(80% 0.14 60);
+}
+@theme inline {
+  --color-role-duke: var(--role-duke);
+  --color-role-assassin: var(--role-assassin);
+  --color-role-captain: var(--role-captain);
+  --color-role-ambassador: var(--role-ambassador);
+  --color-role-contessa: var(--role-contessa);
+}

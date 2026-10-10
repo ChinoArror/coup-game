@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ActionType } from '../types';
 import { handlePass, handlePlayerAction, initializeGame } from '../utils/gameEngine';
-import { createAIRequestContext, isAIRequestCurrent } from './aiDecisionGuard';
+import { createAIRequestContext, isAIRequestCurrent, isAIRequestRelevant } from './aiDecisionGuard';
 
 function actionDeclaredState() {
   const state = initializeGame();
@@ -15,6 +15,14 @@ describe('AI decision guard', () => {
     const context = createAIRequestContext(state, 'ai2');
 
     expect(isAIRequestCurrent(handlePass(state, 'human'), context)).toBe(false);
+  });
+
+  it('keeps a pending AI response relevant after another responder passes', () => {
+    const state = actionDeclaredState();
+    const context = createAIRequestContext(state, 'ai2');
+
+    expect(isAIRequestRelevant(handlePass(state, 'human'), context)).toBe(true);
+    expect(isAIRequestRelevant(handlePass(state, 'ai2'), context)).toBe(false);
   });
 
   it('accepts only the waiting responder in the original revision', () => {

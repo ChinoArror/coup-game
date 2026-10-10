@@ -92,6 +92,44 @@ describe('callAIChannel', () => {
     );
   });
 
+  it('includes the provider error code and request ID in rejected OpenAI diagnostics', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      error: {
+        message: 'Country, region, or territory not supported',
+        type: 'request_forbidden',
+        code: 'unsupported_country_region_territory',
+      },
+    }, { status: 403, headers: { 'X-Request-Id': 'req_support_123' } }));
+
+    await expect(callAIChannel('3', env, request, fetcher)).rejects.toMatchObject({
+      status: 403,
+      message: 'AI provider request failed with HTTP 403: Country, region, or territory not supported [unsupported_country_region_territory] (request ID req_support_123)',
+    });
+  });
+
+  it('uses the relay OpenAI client request ID when the provider request ID is absent', async () => {
+    const fetcher = vi.fn(async () => Response.json({
+      error: {
+        message: 'Country, region, or territory not supported',
+        code: 'unsupported_country_region_territory',
+      },
+    }, { status: 403, headers: { 'X-Client-Request-Id': 'client-support-123' } }));
+
+    await expect(callAIChannel('3', env, request, fetcher)).rejects.toMatchObject({
+      status: 403,
+      message: 'AI provider request failed with HTTP 403: Country, region, or territory not supported [unsupported_country_region_territory] (request ID client-support-123)',
+    });
+  });
+
+  it('preserves a safe string error returned by the relay', async () => {
+    const fetcher = vi.fn(async () => Response.json({ error: 'Provider redirect rejected' }, { status: 502 }));
+
+    await expect(callAIChannel('1', env, request, fetcher)).rejects.toMatchObject({
+      status: 502,
+      message: 'AI provider request failed with HTTP 502: Provider redirect rejected',
+    });
+  });
+
   it('rejects an unknown channel without making an upstream request', async () => {
     const fetcher = vi.fn();
 

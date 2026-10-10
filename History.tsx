@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, CircleDollarSign, History as HistoryIcon, LoaderCircle, Trash2 } from 'lucide-react';
 import { coinChanges } from './services/history';
+import { AppShell, Badge, Button, Card, PageHeader, ThemeToggle, cn, confirmAction, deferSensitive } from './ui';
 
 type Channels = { alapha: string; beta: string };
 type Summary = { id: string; game_id: string; completed_at: number; winner: string | null; ai_channels: Channels };
@@ -12,6 +13,8 @@ export default function History({ onBack }: { onBack: () => void }) {
   const [selected, setSelected] = useState<Detail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Rows whose delete is inside its undo window.
+  const [pendingDelete, setPendingDelete] = useState<Set<string>>(() => new Set());
 
   const loadMatches = async () => {
     setLoading(true);
@@ -41,85 +44,114 @@ export default function History({ onBack }: { onBack: () => void }) {
     }
   };
 
+  const setPending = (id: string, pending: boolean) => {
+    setPendingDelete(current => {
+      const next = new Set(current);
+      if (pending) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  // Confirm, then delete behind an undo window. The row stays visible, dimmed, until then.
   const remove = async (id: string) => {
-    try {
-      setError(null);
-      const response = await fetch('/api/history/' + encodeURIComponent(id), { method: 'DELETE' });
-      if (!response.ok) throw new Error('Unable to delete match history.');
-      setMatches(items => items.filter(item => item.id !== id));
-      if (selected?.id === id) setSelected(null);
-    } catch (cause: any) {
-      setError(cause.message || 'Unable to delete match history.');
-    }
+    setError(null);
+    const confirmed = await confirmAction({ title: 'Delete this match record?', description: 'The saved timeline cannot be recovered after the undo window.', confirmLabel: 'DELETE', tone: 'destructive' });
+    if (!confirmed) return;
+    const wasSelected = selected?.id === id;
+    setPending(id, true);
+    deferSensitive({
+      title: 'Deleting match record',
+      description: 'The record is removed when the timer ends.',
+      successTitle: 'Match record deleted',
+      errorTitle: 'Could not delete match record',
+      onUndo: () => setPending(id, false),
+      run: async () => {
+        try {
+          const response = await fetch('/api/history/' + encodeURIComponent(id), { method: 'DELETE' });
+          if (!response.ok) throw new Error('Unable to delete match history.');
+          setMatches(items => items.filter(item => item.id !== id));
+          if (wasSelected) setSelected(null);
+        } catch (cause: any) {
+          setError(cause.message || 'Unable to delete match history.');
+          throw cause;
+        } finally {
+          setPending(id, false);
+        }
+      },
+    });
   };
 
   const names = new Map(selected?.state.players.map(player => [player.id, player.name]) || []);
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 text-slate-200 md:p-8">
-      <header className="mx-auto mb-8 flex max-w-6xl items-center justify-between">
-        <button onClick={onBack} className="inline-flex items-center gap-2 font-mono text-sm text-slate-400 transition-colors hover:text-amber-500">
-          <ArrowLeft size={18} /> BACK
-        </button>
-        <div className="flex items-center gap-3">
-          <HistoryIcon className="text-amber-500" size={28} />
-          <h1 className="font-mono text-xl font-bold tracking-widest text-amber-500">MATCH HISTORY</h1>
-        </div>
-        <div className="w-16" />
-      </header>
+    <AppShell
+      nav={[
+        { key: 'back', label: 'Command desk', description: 'Back to the command desk', icon: <ArrowLeft size={18} />, onClick: onBack },
+        { key: 'history', label: 'Match history', description: 'Review your previous tables', icon: <HistoryIcon size={18} />, active: true },
+      ]}
+      footer={<ThemeToggle />}
+    >
+      <PageHeader
+        icon={<HistoryIcon size={20} />}
+        title="MATCH HISTORY"
+        actions={<Button variant="outline" onClick={onBack} className="h-10 gap-2 px-3 font-mono text-xs"><ArrowLeft size={16} />BACK</Button>}
+      />
 
-      {error && <div className="mx-auto mb-4 max-w-6xl rounded-lg border border-red-900 bg-red-950/40 p-3 font-mono text-sm text-red-300">{error}</div>}
+      {error && <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 p-3 font-mono text-sm text-log-error">{error}</div>}
 
-      <main className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-5">
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4 lg:col-span-2">
-          <h2 className="mb-4 font-mono text-sm font-bold tracking-widest text-slate-400">SAVED MATCHES</h2>
+      <main className="grid gap-6 lg:grid-cols-5">
+        <Card className="p-4 lg:col-span-2">
+          <h2 className="mb-4 font-mono text-xs uppercase tracking-widest text-muted-foreground">SAVED MATCHES</h2>
           {loading ? (
-            <div className="flex justify-center py-12 text-amber-500"><LoaderCircle className="animate-spin" /></div>
+            <div className="flex justify-center py-12 text-primary"><LoaderCircle className="animate-spin" /></div>
           ) : matches.length === 0 ? (
-            <p className="py-12 text-center font-mono text-sm text-slate-500">No completed matches saved yet.</p>
+            <p className="py-12 text-center font-mono text-sm text-muted-foreground">No completed matches saved yet.</p>
           ) : (
             <div className="space-y-3">
               {matches.map(match => (
-                <article key={match.id} className={'rounded-xl border p-3 transition-colors ' + (selected?.id === match.id ? 'border-amber-500 bg-amber-500/10' : 'border-slate-700 bg-slate-950/70')}>
-                  <button onClick={() => void select(match.id)} className="w-full text-left">
+                <article key={match.id} className={cn('rounded-xl border p-3 transition-colors', selected?.id === match.id ? 'border-primary/50 bg-primary/10' : 'border-border/60 bg-background/50', pendingDelete.has(match.id) && 'opacity-50')}>
+                  <button onClick={() => void select(match.id)} className="w-full text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/40">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-sm font-bold text-slate-100">{match.winner || 'No winner'}</span>
-                      <time className="font-mono text-xs text-slate-500">{new Date(match.completed_at).toLocaleString()}</time>
+                      <span className="font-mono text-sm font-bold">{match.winner || 'No winner'}</span>
+                      <time className="font-mono text-xs text-muted-foreground">{new Date(match.completed_at).toLocaleString()}</time>
                     </div>
-                    <p className="mt-2 font-mono text-xs text-slate-400">Alapha · Channel {match.ai_channels.alapha} &nbsp; Beta · Channel {match.ai_channels.beta}</p>
+                    <p className="mt-2 font-mono text-xs text-muted-foreground">Alapha · Channel {match.ai_channels.alapha} &nbsp; Beta · Channel {match.ai_channels.beta}</p>
                   </button>
-                  <button onClick={() => void remove(match.id)} className="mt-3 inline-flex items-center gap-1 rounded px-2 py-1 font-mono text-xs text-red-400 transition-colors hover:bg-red-950/60 hover:text-red-200" title="Delete this record">
-                    <Trash2 size={14} /> DELETE
-                  </button>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button variant="ghost" size="sm" disabled={pendingDelete.has(match.id)} onClick={() => void remove(match.id)} className="gap-1 px-2 font-mono text-xs text-log-error hover:text-log-error" title="Delete this record">
+                      <Trash2 size={14} /> DELETE
+                    </Button>
+                    {pendingDelete.has(match.id) && <Badge tone="warning">Deleting…</Badge>}
+                  </div>
                 </article>
               ))}
             </div>
           )}
-        </section>
+        </Card>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5 lg:col-span-3">
+        <Card className="p-5 lg:col-span-3">
           {!selected ? (
-            <div className="flex min-h-80 items-center justify-center text-center font-mono text-sm text-slate-500">Select a saved match to inspect its game timeline.</div>
+            <div className="flex min-h-80 items-center justify-center text-center font-mono text-sm text-muted-foreground">Select a saved match to inspect its game timeline.</div>
           ) : (
             <>
-              <div className="mb-5 border-b border-slate-800 pb-4">
-                <h2 className="font-mono text-lg font-bold text-amber-500">{selected.winner || 'Completed match'}</h2>
-                <p className="mt-1 font-mono text-xs text-slate-400">Alapha · Channel {selected.ai_channels.alapha} &nbsp; Beta · Channel {selected.ai_channels.beta}</p>
+              <div className="mb-5 pb-4">
+                <h2 className="font-mono text-lg font-bold text-primary">{selected.winner || 'Completed match'}</h2>
+                <p className="mt-1 font-mono text-xs text-muted-foreground">Alapha · Channel {selected.ai_channels.alapha} &nbsp; Beta · Channel {selected.ai_channels.beta}</p>
               </div>
               <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-1">
                 {selected.state.logs.map((entry, index) => {
                   const previous = index > 0 ? selected.state.logs[index - 1].coins : undefined;
                   const changes = coinChanges(entry.coins, previous);
                   return (
-                    <article key={entry.id} className="rounded-lg border border-slate-800 bg-slate-950/70 p-3">
+                    <article key={entry.id} className="rounded-lg border border-border/60 bg-background/50 p-3">
                       <div className="flex items-start justify-between gap-3">
-                        <p className="text-sm text-slate-200">{entry.text}</p>
-                        <time className="shrink-0 font-mono text-xs text-slate-500">{new Date(entry.timestamp).toLocaleTimeString()}</time>
+                        <p className="text-sm">{entry.text}</p>
+                        <time className="shrink-0 font-mono text-xs text-muted-foreground">{new Date(entry.timestamp).toLocaleTimeString()}</time>
                       </div>
                       {changes.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
                           {changes.map(change => (
-                            <span key={change.playerId} className={'inline-flex items-center gap-1 rounded px-2 py-1 font-mono text-xs ' + (change.delta > 0 ? 'bg-emerald-950/60 text-emerald-300' : 'bg-red-950/60 text-red-300')}>
+                            <span key={change.playerId} className={cn('inline-flex items-center gap-1 rounded-md px-2 py-1 font-mono text-xs tabular-nums', change.delta > 0 ? 'bg-success/10 text-log-success' : 'bg-destructive/10 text-log-error')}>
                               <CircleDollarSign size={12} /> {names.get(change.playerId) || change.playerId} {change.delta > 0 ? '+' : ''}{change.delta}
                             </span>
                           ))}
@@ -131,8 +163,8 @@ export default function History({ onBack }: { onBack: () => void }) {
               </div>
             </>
           )}
-        </section>
+        </Card>
       </main>
-    </div>
+    </AppShell>
   );
 }

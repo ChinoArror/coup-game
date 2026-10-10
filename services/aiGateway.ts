@@ -78,16 +78,29 @@ function sanitizeProviderMessage(message: string): string {
 async function ensureSuccess(response: Response): Promise<void> {
   if (!response.ok) {
     let detail = '';
+    let errorCode = '';
     try {
-      const body = await response.json() as { error?: { message?: unknown } | unknown; message?: unknown };
-      const providerMessage = typeof body.error === 'object' && body.error && 'message' in body.error
-        ? body.error.message
-        : body.message;
+      const body = await response.json() as { error?: unknown; message?: unknown };
+      const providerError = typeof body.error === 'object' && body.error !== null
+        ? body.error as Record<string, unknown>
+        : undefined;
+      const providerMessage = providerError && 'message' in providerError
+        ? providerError.message
+        : typeof body.error === 'string' ? body.error : body.message;
       if (typeof providerMessage === 'string') detail = `: ${sanitizeProviderMessage(providerMessage)}`;
+      if (typeof providerError?.code === 'string' && /^[A-Za-z0-9_.-]{1,100}$/.test(providerError.code)) {
+        errorCode = ` [${providerError.code}]`;
+      }
     } catch {
       // The provider did not return a JSON error payload.
     }
-    throw new AIChannelError(`AI provider request failed with HTTP ${response.status}${detail}`, response.status);
+    const requestId = (
+      response.headers.get('x-request-id') ?? response.headers.get('x-client-request-id')
+    )?.trim();
+    const requestIdDetail = requestId && /^[A-Za-z0-9._:-]{1,128}$/.test(requestId)
+      ? ` (request ID ${requestId})`
+      : '';
+    throw new AIChannelError(`AI provider request failed with HTTP ${response.status}${detail}${errorCode}${requestIdDetail}`, response.status);
   }
 }
 

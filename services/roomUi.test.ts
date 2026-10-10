@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterRoomSummaries, normalizeInviteToken, roomAiLabels, roomMobileClasses, roomStatusLabel } from './roomUi';
+import { filterRoomSummaries, normalizeInviteToken, roomAiLabels, roomMobileClasses, roomStatusLabel, summarizeRoomSeats } from './roomUi';
 
 const rooms = [
   { id: 'open', status: 'open', seatCount: 3, aiChannels: ['1'], timeControls: {}, isReady: false, memberCount: 1 },
@@ -30,5 +30,18 @@ describe('room list presentation', () => {
   it('accepts either a bare invitation token or a complete invitation link', () => {
     expect(normalizeInviteToken('  0123456789abcdef0123456789abcdef  ')).toBe('0123456789abcdef0123456789abcdef');
     expect(normalizeInviteToken('https://coup.aryuki.com/game?invite=0123456789abcdef0123456789abcdef&source=share')).toBe('0123456789abcdef0123456789abcdef');
+  });
+
+  it('shows how AI and human seats fill a room around its owner', () => {
+    expect(summarizeRoomSeats(4, ['1', '3'])).toEqual({
+      totalSeats: 4,
+      aiSeats: 2,
+      humanSeats: 2,
+      openGuestSeats: 1,
+      valid: true,
+    });
+    expect(summarizeRoomSeats(3, ['1', '2', '3'])).toMatchObject({ humanSeats: 0, valid: false });
+    expect(summarizeRoomSeats(3, ['1', '1'])).toMatchObject({ openGuestSeats: 0, valid: false });
+    expect(summarizeRoomSeats(3, ['1'], 3)).toMatchObject({ humanSeats: 2, valid: false });
   });
 });

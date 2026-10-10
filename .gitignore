@@ -6,6 +6,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+%LOG%
 
 node_modules
 .worktrees/
@@ -14,6 +15,8 @@ dist
 dist-ssr
 *.local
 .wrangler
+.local-e2e/
+wrangler.e2e.toml
 
 # Editor directories and files
 .vscode/*
